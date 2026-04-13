@@ -19,3 +19,5 @@ Thumbs.db
 *.db
 *.pdf
 *.log
+balatravel.db-shm
+balatravel.db-wal

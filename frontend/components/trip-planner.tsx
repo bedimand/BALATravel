@@ -82,6 +82,7 @@ export function TripPlanner({ tripId }: Props) {
       <div style={{ position: "absolute", inset: 0 }}>
         <MapPanel 
           map={workspace.map} 
+          selectedPlaceId={selectedPlaceId}
           activeDay={activeDay} 
           onPlaceClick={(id) => setSelectedPlaceId(id)} 
           baseLat={workspace.trip.accommodation_lat || 0}

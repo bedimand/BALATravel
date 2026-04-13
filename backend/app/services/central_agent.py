@@ -56,14 +56,6 @@ class CentralPlanningAgent:
             "params": {}
         },
         {
-            "name": "get_distance_info",
-            "description": "Calculate travel distance and time between multiple points. Call this to optimize your route before final selection.",
-            "params": {
-                "origin": "string (lat,lng or 'hotel')",
-                "destinations": "list of strings (lat,lng)"
-            }
-        },
-        {
             "name": "finish_plan",
             "description": "Call this when the itinerary is fully built and ready for the user.",
             "params": {}
@@ -107,25 +99,43 @@ Current Step: {context.step + 1}
 Remaining: {self.MAX_STEPS - context.step}
 
 SEARCH STRATEGY:
-1. START with a global city search (no center_lat/lng) to find top-rated iconic places.
-2. THEN search near the hotel (using hotel coordinates) for convenience.
-3. COLLECT at least 5-6 varied candidates per day (museums, parks, points of interest).
-4. FOR MEALS: Search specifically for "restaurants", "cafes", or "bars" and mark interest_key as "gastronomia".
+1. MANDATORY START: Search for "iconic landmarks" and "must-see attractions" across the ENTIRE city (global search, no hotel coordinates).
+2. THEN search specifically for each user interest using search_by_interest. 
+   - IMPORTANT: You MUST provide a descriptive, human-friendly 'query' parameter. 
+   - NEVER use internal keys like "arte_museus" or "vida_noturna" as search terms. 
+   - Example: Instead of query="historia", use query="best historical landmarks and colonial architecture in {trip.destination}".
+3. FINALLY search near the hotel for convenience options.
+4. CATEGORY MAPPING & CURATION:
+   - "Gastronomia": Search for "top-rated local restaurants", "authentic regional food".
+   - "Vida Noturna": Search for "iconic bars", "live music venues", "nightlife". ONLY for evening slots. Avoid duplicates.
+   - "Arte e Museus": Search for "renowned art galleries", "national museums", "cultural exhibitions".
+   - "Parques e Natureza": Search for "scenic public parks", "botanical gardens", "nature reserves".
+   - CURATION RULE: Prioritize iconic historical landmarks and museums over repeated cafes or bars. Use at least 25 results for these searches.
 
 RULES:
 1. Search once per interest using search_by_interest.
-2. Call enrich_place_details for the top candidates (essential for deciding on route quality).
-3. USE get_distance_info to check travel times between candidate clusters and the hotel. This is CRITICAL for building a realistic plan.
-4. Call score_places_for_traveler to narrow down based on proximity and interests.
-5. Call cluster_and_schedule to construct the final itinerary. THIS IS MANDATORY TO COMPLETE THE TRIP.
-6. If you have less than 5 steps remaining, you MUST call cluster_and_schedule immediately.
-7. Return JSON ONLY.
+2. Call enrich_place_details for the top candidates (essential for deciding on quality).
+3. Call score_places_for_traveler to narrow down candidates.
+4. Call cluster_and_schedule to construct the final itinerary. THIS IS MANDATORY.
+5. If you have less than 5 steps remaining, you MUST call cluster_and_schedule immediately.
+6. Return JSON ONLY. Do NOT use markdown code blocks. Do NOT include any conversation or explanation before or after the JSON.
+
+OUTPUT SCHEMA:
 {{
-  "reasoning": "I should search for vegan food...",
+  "reasoning": "Brief explanation of your current thought process",
   "tool_calls": [
-    {{"name": "search_by_interest", "params": {{"interest_key": "gastronomia", "query": "vegan restaurants {trip.destination}", "max_results": 10}}}}
-  ]
+    {{"name": "tool_name", "params": {{"param_key": "param_value"}}}}
+  ],
+  "ready": true (only set to true if cluster_and_schedule was completed)
 }}
+
+EXAMPLE RESPONSE:
+{{
+  "reasoning": "I will search for icons first...",
+  "tool_calls": [{{"name": "search_by_interest", "params": {{"interest_key": "landmark", "query": "top attractions Paris"}}}}]
+}}
+
+IMPORTANT: Use a higher 'max_results' (e.g. 20-25) for interest-based searches to ensure a diverse pool of candidates across the whole city.
 
 AVAILABLE TOOLS: {json.dumps([t['name'] for t in self.TOOLS])}
         """
@@ -139,27 +149,42 @@ AVAILABLE TOOLS: {json.dumps([t['name'] for t in self.TOOLS])}
                 print(f"[AGENT] Passo {context.step + 1}/{self.MAX_STEPS} - Pensando...")
                 decision_str = self._think(context)
                 try:
-                    # Strip markdown code fences if LLM wraps in ```json
                     clean = decision_str.strip()
-                    if clean.startswith("```"):
-                        clean = clean.split("\n", 1)[-1]
-                    if clean.endswith("```"):
+                    # Remove markdown backticks if present
+                    if "```json" in clean:
+                        clean = clean.split("```json", 1)[1]
+                    elif "```" in clean:
+                        clean = clean.split("```", 1)[1]
+                    
+                    if "```" in clean:
                         clean = clean.rsplit("```", 1)[0]
-                    clean = clean[clean.find("{"):clean.rfind("}")+1]
+                    
+                    # Find the outermost curly braces
+                    start = clean.find("{")
+                    end = clean.rfind("}")
+                    if start != -1 and end != -1:
+                        clean = clean[start : end + 1]
+                    
                     decision = json.loads(clean)
-                except json.JSONDecodeError:
-                    print(f"[AGENT] Erro: LLM retornou JSON invalido.")
-                    log_step_fn(db, run, "agent_error", "failed", "LLM returned invalid JSON.", None, {"raw": decision_str})
+                except (json.JSONDecodeError, ValueError):
+                    print(f"[AGENT] Erro: LLM retornou JSON invalido ou malformado.")
+                    log_step_fn(db, run, "agent_error", "failed", "LLM returned invalid JSON.", None, {"raw_preview": decision_str[:500]})
                     context.step += 1
                     continue
                 
                 tool_calls = decision.get("tool_calls", [])
                 reasoning = decision.get("reasoning", "")
                 
+                # Log the reasoning/thought process immediately
+                if reasoning:
+                    print(f"[AGENT] Pensamento: {reasoning}")
+                    log_step_fn(db, run, "agent_thought", "completed", "Agente processando estratégia...", reasoning)
+                
                 if not tool_calls:
                     if decision.get("ready") or "finish_plan" in str(decision): # Robustness
                         context.ready = True
                         print("[AGENT] LLM sinalizou finalizacao.")
+                        log_step_fn(db, run, "agent_finish", "completed", "Agente concluiu o planejamento.", reasoning)
                         break
                     
                 for tool_call in tool_calls:
@@ -193,7 +218,11 @@ AVAILABLE TOOLS: {json.dumps([t['name'] for t in self.TOOLS])}
         if context.observations:
             history_str = "Completed steps so far:\n"
             for idx, obs in enumerate(context.observations):
-                history_str += f"Step {idx+1}: {obs['tool']} -> {json.dumps(obs['result'])[:500]}...\n"
+                # Truncate results to prevent context bloating and JSON errors
+                res_str = json.dumps(obs['result'])
+                if len(res_str) > 150:
+                    res_str = res_str[:150] + "..."
+                history_str += f"Step {idx+1}: {obs['tool']} -> {res_str}\n"
             messages.append({"role": "user", "content": f"Here is the context so far:\n{history_str}\nWhat tool should I call next? Remember to reply ONLY with valid JSON."})
         else:
             messages.append({"role": "user", "content": "Let's start planning. Remember to reply ONLY with valid JSON."})
@@ -210,13 +239,28 @@ AVAILABLE TOOLS: {json.dumps([t['name'] for t in self.TOOLS])}
         start_t = datetime.now()
         
         if tool_name == "search_by_interest":
-            query = params.get("query", f"{params.get('interest_key', '')} {trip.destination}")
+            interest_key = params.get("interest_key", "")
+            query = params.get("query", "").strip()
+            
+            # Validation: Force human-friendly queries
+            if not query or query.lower() == interest_key.lower():
+                msg = f"Error: You must provide a descriptive, human-friendly 'query' parameter. Do NOT use '{interest_key}' as the search term."
+                print(f"[AGENT] {msg}")
+                return msg
+                
             try:
-                results = provider.search_places_by_interest(trip, query, max_results=params.get("max_results", 12))
+                results = provider.search_places_by_interest(trip, query, max_results=params.get("max_results", 20))
                 context.places_found.extend(results)
-                summary = f"Encontrados {len(results)} lugares para '{params.get('interest_key')}'."
-                log_step_fn(db, run, tool_name, "completed", summary, reasoning, params, {"count": len(results)})
-                return f"Found {len(results)} places. Top 3: {', '.join([r['name'] for r in results[:3]])}"
+                
+                place_names = [r['name'] for r in results[:5]]
+                if len(results) > 5:
+                    place_names.append("...")
+                
+                # Use query instead of interest_key for the summary to show transparency
+                summary = f"Encontrados {len(results)} lugares para a busca: '{query}'. (Destaques: {', '.join(place_names)})"
+                print(f"[AGENT] {summary}")
+                log_step_fn(db, run, tool_name, "completed", summary, reasoning, params, {"count": len(results), "names": [r['name'] for r in results]})
+                return f"Found {len(results)} places for query '{query}'. Top 3: {', '.join([r['name'] for r in results[:3]])}"
             except Exception as e:
                 log_step_fn(db, run, tool_name, "failed", f"Erro: {str(e)}", params)
                 return f"Error: {str(e)}"

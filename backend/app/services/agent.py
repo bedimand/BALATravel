@@ -336,167 +336,175 @@ class AgentCoordinator:
         applied_changes: list[dict[str, Any]] = []
         assistant_bits: list[str] = []
 
-        places = _load_places(db, trip.id)
-        actions = _fallback_actions(message, trip, bool(places))
-        if not actions:
-            actions = self._plan_actions_with_llm(trip, message, places) or []
+        try:
+            places = _load_places(db, trip.id)
+            actions = _fallback_actions(message, trip, bool(places))
+            if not actions:
+                actions = self._plan_actions_with_llm(trip, message, places) or []
 
-        for action in actions[:MAX_AGENT_STEPS]:
-            tool_name = action.get("tool")
-            if tool_name == "search_all":
-                def _run_search() -> dict[str, Any]:
-                    result, search_warnings = tool_search_all(db, trip)
-                    return {"result": result, "warnings": search_warnings}
+            for action in actions[:MAX_AGENT_STEPS]:
+                tool_name = action.get("tool")
+                if tool_name == "search_all":
+                    def _run_search() -> dict[str, Any]:
+                        result, search_warnings = tool_search_all(db, trip)
+                        return {"result": result, "warnings": search_warnings}
 
-                search_payload = self._tool(
-                    db,
-                    run,
-                    "search_all",
-                    {"trip_id": trip.id},
-                    _run_search,
-                )
-                warnings.extend(search_payload.get("warnings", []))
-                assistant_bits.append("Busquei novas opcoes de voo, hospedagem e lugares.")
-                trip = _refresh_trip(db, self.user, trip.id)
-                continue
-
-            if tool_name == "generate_itinerary":
-                blockers = get_planning_blockers(trip, _load_places(db, trip.id))
-                if blockers:
-                    warnings.append(f"Missing planning context before generation: {', '.join(blockers)}.")
-                    assistant_bits.append(_format_planning_blocker_message(blockers))
-                    continue
-                generated = self._tool(
-                    db,
-                    run,
-                    "generate_itinerary",
-                    {"trip_id": trip.id},
-                    lambda: {"itinerary_id": tool_generate_itinerary(db, trip, run=run, rationale=action.get("rationale", ""))[0].id},
-                )
-                applied_changes.append(
-                    {"mutation_type": "generate_itinerary", "rationale": action.get("rationale", ""), "itinerary_version_id": generated["itinerary_id"]}
-                )
-                assistant_bits.append("Gerei um roteiro novo com base nos dados atuais.")
-                trip = _refresh_trip(db, self.user, trip.id)
-                continue
-
-            if tool_name == "replan_itinerary":
-                blockers = get_planning_blockers(trip, _load_places(db, trip.id))
-                if blockers:
-                    warnings.append(f"Missing planning context before replanning: {', '.join(blockers)}.")
-                    assistant_bits.append(_format_planning_blocker_message(blockers))
-                    continue
-                replanned = self._tool(
-                    db,
-                    run,
-                    "replan_itinerary",
-                    {"trip_id": trip.id},
-                    lambda: {"itinerary_id": tool_replan_itinerary(db, trip, run=run, rationale=action.get("rationale", ""))[0].id},
-                )
-                applied_changes.append(
-                    {"mutation_type": "replan_itinerary", "rationale": action.get("rationale", ""), "itinerary_version_id": replanned["itinerary_id"]}
-                )
-                assistant_bits.append("Replanejei o roteiro para refletir sua solicitacao.")
-                trip = _refresh_trip(db, self.user, trip.id)
-                continue
-
-            if tool_name == "reorder_day":
-                date_text = str(action.get("date", "")).strip()
-                if not date_text:
-                    continue
-                reordered = self._tool(
-                    db,
-                    run,
-                    "reorder_day",
-                    {"trip_id": trip.id, "date": date_text},
-                    lambda: {"itinerary_id": tool_reorder_day(db, trip, date_text, rationale=action.get("rationale", ""), run=run)[0].id},
-                )
-                applied_changes.append(
-                    {"mutation_type": "reorder_day", "rationale": action.get("rationale", ""), "itinerary_version_id": reordered["itinerary_id"]}
-                )
-                assistant_bits.append(f"Reorganizei o dia {date_text}.")
-                trip = _refresh_trip(db, self.user, trip.id)
-                continue
-
-            if tool_name == "update_item":
-                raw_item_id = action.get("item_id")
-                if raw_item_id is None:
-                    continue
-                updated = self._tool(
-                    db,
-                    run,
-                    "update_item",
-                    {"trip_id": trip.id, "item_id": raw_item_id, "updates": action.get("updates", {})},
-                    lambda: {"itinerary_id": tool_update_item(
+                    search_payload = self._tool(
                         db,
-                        trip,
-                        int(raw_item_id),
-                        dict(action.get("updates", {})),
-                        rationale=action.get("rationale", ""),
-                        run=run,
-                    )[0].id},
-                )
-                applied_changes.append(
-                    {"mutation_type": "update_item", "rationale": action.get("rationale", ""), "itinerary_version_id": updated["itinerary_id"]}
-                )
-                assistant_bits.append("Ajustei um item especifico do roteiro.")
-                trip = _refresh_trip(db, self.user, trip.id)
-                continue
-
-            if tool_name == "remove_item":
-                raw_item_id = action.get("item_id")
-                if raw_item_id is None:
+                        run,
+                        "search_all",
+                        {"trip_id": trip.id},
+                        _run_search,
+                    )
+                    warnings.extend(search_payload.get("warnings", []))
+                    assistant_bits.append("Busquei novas opcoes de voo, hospedagem e lugares.")
+                    trip = _refresh_trip(db, self.user, trip.id)
                     continue
-                removed = self._tool(
-                    db,
-                    run,
-                    "remove_item",
-                    {"trip_id": trip.id, "item_id": raw_item_id},
-                    lambda: {"itinerary_id": tool_remove_item(db, trip, int(raw_item_id), rationale=action.get("rationale", ""), run=run)[0].id},
-                )
-                applied_changes.append(
-                    {"mutation_type": "remove_item", "rationale": action.get("rationale", ""), "itinerary_version_id": removed["itinerary_id"]}
-                )
-                assistant_bits.append("Removi uma atividade do roteiro.")
-                trip = _refresh_trip(db, self.user, trip.id)
-                continue
 
-        if not applied_changes:
-            blockers = get_planning_blockers(trip, _load_places(db, trip.id))
-            if blockers and get_active_itinerary(trip) is None:
-                warnings.append(f"Autonomous planning blocked because context is incomplete: {', '.join(blockers)}.")
-                assistant_bits.append(_format_planning_blocker_message(blockers))
+                if tool_name == "generate_itinerary":
+                    blockers = get_planning_blockers(trip, _load_places(db, trip.id))
+                    if blockers:
+                        warnings.append(f"Missing planning context before generation: {', '.join(blockers)}.")
+                        assistant_bits.append(_format_planning_blocker_message(blockers))
+                        continue
+                    generated = self._tool(
+                        db,
+                        run,
+                        "generate_itinerary",
+                        {"trip_id": trip.id},
+                        lambda: {"itinerary_id": tool_generate_itinerary(db, trip, run=run, rationale=action.get("rationale", ""))[0].id},
+                    )
+                    applied_changes.append(
+                        {"mutation_type": "generate_itinerary", "rationale": action.get("rationale", ""), "itinerary_version_id": generated["itinerary_id"]}
+                    )
+                    assistant_bits.append("Gerei um roteiro novo com base nos dados atuais.")
+                    trip = _refresh_trip(db, self.user, trip.id)
+                    continue
+
+                if tool_name == "replan_itinerary":
+                    blockers = get_planning_blockers(trip, _load_places(db, trip.id))
+                    if blockers:
+                        warnings.append(f"Missing planning context before replanning: {', '.join(blockers)}.")
+                        assistant_bits.append(_format_planning_blocker_message(blockers))
+                        continue
+                    replanned = self._tool(
+                        db,
+                        run,
+                        "replan_itinerary",
+                        {"trip_id": trip.id},
+                        lambda: {"itinerary_id": tool_replan_itinerary(db, trip, run=run, rationale=action.get("rationale", ""))[0].id},
+                    )
+                    applied_changes.append(
+                        {"mutation_type": "replan_itinerary", "rationale": action.get("rationale", ""), "itinerary_version_id": replanned["itinerary_id"]}
+                    )
+                    assistant_bits.append("Replanejei o roteiro para refletir sua solicitacao.")
+                    trip = _refresh_trip(db, self.user, trip.id)
+                    continue
+
+                if tool_name == "reorder_day":
+                    date_text = str(action.get("date", "")).strip()
+                    if not date_text:
+                        continue
+                    reordered = self._tool(
+                        db,
+                        run,
+                        "reorder_day",
+                        {"trip_id": trip.id, "date": date_text},
+                        lambda: {"itinerary_id": tool_reorder_day(db, trip, date_text, rationale=action.get("rationale", ""), run=run)[0].id},
+                    )
+                    applied_changes.append(
+                        {"mutation_type": "reorder_day", "rationale": action.get("rationale", ""), "itinerary_version_id": reordered["itinerary_id"]}
+                    )
+                    assistant_bits.append(f"Reorganizei o dia {date_text}.")
+                    trip = _refresh_trip(db, self.user, trip.id)
+                    continue
+
+                if tool_name == "update_item":
+                    raw_item_id = action.get("item_id")
+                    if raw_item_id is None:
+                        continue
+                    updated = self._tool(
+                        db,
+                        run,
+                        "update_item",
+                        {"trip_id": trip.id, "item_id": raw_item_id, "updates": action.get("updates", {})},
+                        lambda: {"itinerary_id": tool_update_item(
+                            db,
+                            trip,
+                            int(raw_item_id),
+                            dict(action.get("updates", {})),
+                            rationale=action.get("rationale", ""),
+                            run=run,
+                        )[0].id},
+                    )
+                    applied_changes.append(
+                        {"mutation_type": "update_item", "rationale": action.get("rationale", ""), "itinerary_version_id": updated["itinerary_id"]}
+                    )
+                    assistant_bits.append("Ajustei um item especifico do roteiro.")
+                    trip = _refresh_trip(db, self.user, trip.id)
+                    continue
+
+                if tool_name == "remove_item":
+                    raw_item_id = action.get("item_id")
+                    if raw_item_id is None:
+                        continue
+                    removed = self._tool(
+                        db,
+                        run,
+                        "remove_item",
+                        {"trip_id": trip.id, "item_id": raw_item_id},
+                        lambda: {"itinerary_id": tool_remove_item(db, trip, int(raw_item_id), rationale=action.get("rationale", ""), run=run)[0].id},
+                    )
+                    applied_changes.append(
+                        {"mutation_type": "remove_item", "rationale": action.get("rationale", ""), "itinerary_version_id": removed["itinerary_id"]}
+                    )
+                    assistant_bits.append("Removi uma atividade do roteiro.")
+                    trip = _refresh_trip(db, self.user, trip.id)
+                    continue
+
+            if not applied_changes:
+                blockers = get_planning_blockers(trip, _load_places(db, trip.id))
+                if blockers and get_active_itinerary(trip) is None:
+                    warnings.append(f"Autonomous planning blocked because context is incomplete: {', '.join(blockers)}.")
+                    assistant_bits.append(_format_planning_blocker_message(blockers))
+                else:
+                    trip, chat_changes, chat_warnings, assistant_message = self._autonomous_chat_followup(db, trip, run, message)
+                    applied_changes.extend(chat_changes)
+                    warnings.extend(chat_warnings)
+                    if assistant_message:
+                        assistant_bits.append(assistant_message)
+
+            if not assistant_bits:
+                assistant_bits.append("Analisei sua solicitacao e nao encontrei uma acao segura para aplicar automaticamente.")
+
+            trip = _refresh_trip(db, self.user, trip.id)
+            options = self._tool(
+                db,
+                run,
+                "list_current_options",
+                {"trip_id": trip.id},
+                lambda: tool_list_current_options(db, trip),
+            )
+            active = get_active_itinerary(trip)
+            proposed_followups = []
+            if not active:
+                proposed_followups.append("Peça para eu gerar o primeiro roteiro completo.")
+            elif not trip.flights or not trip.hotels:
+                proposed_followups.append("Posso buscar mais opções para enriquecer a próxima revisão.")
             else:
-                trip, chat_changes, chat_warnings, assistant_message = self._autonomous_chat_followup(db, trip, run, message)
-                applied_changes.extend(chat_changes)
-                warnings.extend(chat_warnings)
-                if assistant_message:
-                    assistant_bits.append(assistant_message)
+                proposed_followups.append("Posso otimizar um dia específico, reduzir custo ou refazer o estilo do roteiro.")
+            assistant_bits.append(
+                f"Estado atual: {options['flights']} voos, {options['hotels']} hoteis e {options['places']} lugares salvos."
+            )
+            run = self._finish_run(db, run, " ".join(assistant_bits).strip(), list(dict.fromkeys(warnings)), applied_changes)
+            return self._build_result(db, trip, run, run.warnings, applied_changes, proposed_followups)
 
-        if not assistant_bits:
-            assistant_bits.append("Analisei sua solicitacao e nao encontrei uma acao segura para aplicar automaticamente.")
-
-        trip = _refresh_trip(db, self.user, trip.id)
-        options = self._tool(
-            db,
-            run,
-            "list_current_options",
-            {"trip_id": trip.id},
-            lambda: tool_list_current_options(db, trip),
-        )
-        active = get_active_itinerary(trip)
-        proposed_followups = []
-        if not active:
-            proposed_followups.append("Peça para eu gerar o primeiro roteiro completo.")
-        elif not trip.flights or not trip.hotels:
-            proposed_followups.append("Posso buscar mais opções para enriquecer a próxima revisão.")
-        else:
-            proposed_followups.append("Posso otimizar um dia específico, reduzir custo ou refazer o estilo do roteiro.")
-        assistant_bits.append(
-            f"Estado atual: {options['flights']} voos, {options['hotels']} hoteis e {options['places']} lugares salvos."
-        )
-        run = self._finish_run(db, run, " ".join(assistant_bits).strip(), list(dict.fromkeys(warnings)), applied_changes)
-        return self._build_result(db, trip, run, run.warnings, applied_changes, proposed_followups)
+        except Exception as exc:
+            run.status = "failed"
+            run.assistant_message = f"Ocorreu um erro técnico durante o processamento: {str(exc)}"
+            db.add(run)
+            db.commit()
+            raise HTTPException(status_code=500, detail=str(exc))
 
     def preview_message(self, db: Session, trip_id: int, message: str) -> ChatResponse:
         trip = _load_trip(db, self.user, trip_id)

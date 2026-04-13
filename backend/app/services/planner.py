@@ -60,28 +60,62 @@ def _hour_status(place: Place, current_date: date, slot_start: time) -> str:
     return "closed"
 
 
+def _get_major_category(place: Place) -> str:
+    cat = (place.category or "").lower()
+    # Broad food/dining bucket
+    if any(t in cat for t in ["restaurant", "food", "dining", "meal", "steakhouse", "grill", "bistro", "pizza", "sushi", "burger", "gastronomia", "churrascaria", "frutos do mar", "massa", "italiano", "wine bar", "bar de vinhos"]):
+        return "food"
+    # Lighter/breakfast bucket
+    if any(t in cat for t in ["cafe", "coffee", "bakery", "breakfast", "brunch", "padaria", "confeitaria"]):
+        return "cafe"
+    if any(t in cat for t in ["museum", "art", "gallery", "exhibition", "musée", "galeria"]):
+        return "culture"
+    if any(t in cat for t in ["park", "garden", "beach", "nature", "outdoor", "zoo", "forest", "parque", "praia", "jardim"]):
+        return "nature"
+    if any(t in cat for t in ["landmark", "attraction", "historic", "square", "church", "cathedral", "palace", "monument", "torre", "ponte", "castle", "viewpoint", "lighthouse", "statue", "museum", "art_gallery", "galeria", "museu", "park", "parque", "zoo", "aquarium", "cultural", "teatro", "theater"]):
+        return "landmark"
+    # Nightlife bucket - including breweries, pubs and bars
+    if any(t in cat for t in ["bar", "club", "pub", "discos", "nightlife", "night_club", "wine bar", "bar de vinhos", "cocktail bar", "cervejaria", "brewery", "choperia", "distillery", "liquor store"]):
+        return "nightlife"
+    return cat
+
+
 def _time_suitability_bonus(place: Place, slot_start: time) -> float:
     category = (place.category or "").lower()
+    major_cat = _get_major_category(place)
     hour = slot_start.hour
     
-    # Food logic
-    is_food = any(t in category for t in ["restaurant", "food", "dining", "meal", "steakhouse", "grill", "bistro", "pizza"])
-    is_cafe = any(t in category for t in ["cafe", "coffee", "bakery", "breakfast", "brunch"])
-    
-    if is_food:
-        # Peak lunch: 12-14, Peak dinner: 19-21
+    if major_cat == "food":
+        # Strict meal slots
         if (12 <= hour <= 14) or (19 <= hour <= 21):
+            return 3.0 # Stronger bonus for standard meal times
+        if 8 <= hour <= 10:
+            return -8.0 # Very high penalty for steakhouse/heavy food for breakfast
+        return -4.0 # Penalize dining in non-peak hours (e.g. 16:00)
+
+    if major_cat == "nightlife":
+        if hour < 17:
+            return -10.0 # Strict penalty for bars in the morning/afternoon
+        if hour >= 19:
+            return 4.0 # High bonus for evening nightlife
+        return 1.0
+        
+    if major_cat == "cafe":
+        if 8 <= hour <= 11:
             return 2.5
-        if 8 <= hour <= 10: # Breakfast time
-            return 1.5 if is_cafe else -5.0 # Penalize non-breakfast food in the morning
-        return -1.0 # Slight penalty for off-peak dining
+        if 15 <= hour <= 17:
+            return 2.0 # Afternoon coffee
+        return 0.5
         
     # Sightseeing logic
-    is_sightseeing = any(t in category for t in ["museum", "gallery", "landmark", "attraction", "park", "garden"])
+    is_sightseeing = major_cat in ["culture", "landmark", "nature"]
     if is_sightseeing:
-        if 9 <= hour <= 17: # Daytime is best for sightseeing
-            return 1.5
-        return -2.0 # Sightseeing at night is often less ideal or closed
+        if 9 <= hour <= 17:
+            bonus = 2.0
+            if major_cat == "landmark":
+                bonus += 18.0 # SUPER BOOST (Total +20.0)
+            return bonus
+        return -3.0
         
     return 0.0
 
@@ -169,6 +203,7 @@ def build_itinerary(db: Session, trip: Trip, places: list[Place], hotels: list[H
         day_end_limit = datetime.combine(current_date, trip.daily_end_time)
         day_category_usage: dict[str, int] = {}
         day_items_scheduled = 0
+        last_major_cat = None
 
         while remaining and time_cursor < day_end_limit:
             weather = weather_lookup.get(current_date)
@@ -185,9 +220,15 @@ def build_itinerary(db: Session, trip: Trip, places: list[Place], hotels: list[H
                 if status == "closed":
                     continue
                 
-                # Diversity Penalty: Avoid repeating categories on the same day
-                cat_usage = day_category_usage.get(candidate.category, 0)
-                repetition_penalty = cat_usage * 5.0 # Scale penalty significantly
+                # Diversity Penalty: Avoid repeating major categories on the same day
+                major_cat = _get_major_category(candidate)
+                repetition_penalty = 0.0
+                used_count = day_category_usage.get(major_cat, 0)
+                if used_count > 0:
+                    if major_cat in ["food", "nightlife", "cafe"]:
+                        repetition_penalty = used_count * 30.0 # Extremely strict limit for repetition
+                    else:
+                        repetition_penalty = used_count * 5.0
                 
                 weather_penalty = 2.5 if weather and weather.is_outdoor_risky and _is_outdoor_place(candidate) else 0.0
                 status_penalty = 0.0 if status == "open" else 1.0
@@ -199,11 +240,13 @@ def build_itinerary(db: Session, trip: Trip, places: list[Place], hotels: list[H
                 dist_km = haversine_km(day_anchor[0], day_anchor[1], candidate.lat, candidate.lng)
                 scoring_pool.append({
                     "candidate": candidate,
+                    "major_cat": major_cat,
                     "base_score": base_score,
                     "dist_km": dist_km,
                     "status": status,
                     "repetition_penalty": repetition_penalty,
-                    "time_bonus": time_bonus
+                    "time_bonus": time_bonus,
+                    "last_cat": last_major_cat
                 })
 
             # 2. Second Pass: Filter for top proximity candidates and perform actual routing
@@ -215,9 +258,13 @@ def build_itinerary(db: Session, trip: Trip, places: list[Place], hotels: list[H
                 candidate = entry["candidate"]
                 route = estimate_route(db, trip, day_anchor, (candidate.lat, candidate.lng))
                 travel_time_min = route.duration_min
-                proximity_score = -(travel_time_min / 30)
+                proximity_score = -(travel_time_min / 60) # Reduced proximity bias (from 30 to 60) to allow city-wide landmarks
                 
                 final_score = entry["base_score"] + proximity_score
+                
+                # Consumption Cooldown: Extra penalty if the previous item was also food/nightlife/cafe
+                if last_major_cat in ["food", "nightlife", "cafe"] and entry["major_cat"] in ["food", "nightlife", "cafe"]:
+                    final_score -= 20.0 # Even stronger discouragement for back-to-back consumption
                 
                 if final_score > best_score:
                     best_score = final_score
@@ -265,7 +312,9 @@ def build_itinerary(db: Session, trip: Trip, places: list[Place], hotels: list[H
                 )
             )
             day_items_scheduled += 1
-            day_category_usage[best_candidate.category] = day_category_usage.get(best_candidate.category, 0) + 1
+            major_cat = _get_major_category(best_candidate)
+            day_category_usage[major_cat] = day_category_usage.get(major_cat, 0) + 1
+            last_major_cat = major_cat # Track for cooldown
             total_activity_cost += Decimal("45.00")
             
             day_anchor = (best_candidate.lat, best_candidate.lng)

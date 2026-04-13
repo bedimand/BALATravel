@@ -178,7 +178,7 @@ export function TripForm() {
         end_date: draft.end_date,
         budget: parseFloat(draft.budget),
         style: draft.travel_pace,
-        interests: draft.interests.map(i => i.split(" ")[1] ?? i),
+        interests: draft.interests.map(i => i.split(" ").slice(1).join(" ") || i),
         accommodation_name: draft.accommodation_name,
         accommodation_address: draft.accommodation_address,
         accommodation_lat: draft.accommodation_lat,

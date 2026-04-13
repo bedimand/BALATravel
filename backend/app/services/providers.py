@@ -266,6 +266,27 @@ class TravelProvider:
         Search Google Maps for places matching a query string.
         If center_lat/lng are provided, biases the search near that location.
         """
+        # Internal mapping to expand generic interest categories into better keywords
+        category_map = {
+            "vida noturna": "nightlife bars clubs cocktail",
+            "gastronomia": "best restaurants local food dining",
+            "arte e museus": "museums art galleries exhibitions",
+            "parques e natureza": "parks botanical gardens nature",
+            "compras": "shopping malls markets stores",
+            "praia": "beaches seaside",
+            "caminhadas": "hiking trails walking paths",
+            "landmark": "top iconic landmarks tourist attractions must-see",
+            "turismo": "main city highlights points of interest top-rated attractions",
+        }
+        
+        lowered = query.lower().strip()
+        dest_lowered = trip.destination.lower().strip()
+        for interest, keywords in category_map.items():
+            # Match "Interest" or "Interest [Destination]"
+            if lowered == interest or lowered == f"{interest} {dest_lowered}":
+                query = f"{keywords} in {trip.destination}"
+                break
+
         params = {
             "engine": "google_maps",
             "q": query,
@@ -408,6 +429,9 @@ class TravelProvider:
             raise ProviderIntegrationError("OPENTRIPMAP_API_KEY is missing.")
         target_count = max(settings.place_catalog_max_results, 12)
         query_variants = [
+            f"top iconic landmarks in {trip.destination}",
+            f"must see attractions in {trip.destination}",
+            f"best tourist spots {trip.destination}",
             f"attractions {trip.destination}",
             f"things to do in {trip.destination}",
             f"museums in {trip.destination}",
