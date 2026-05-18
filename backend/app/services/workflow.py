@@ -295,12 +295,12 @@ class WorkflowService:
         trip = self._load_trip(db, trip_id)
         state, run = self._start_run(db, trip, run_type)
         warnings: list[str] = []
-        
-        from app.services.central_agent import CentralPlanningAgent
-        agent = CentralPlanningAgent()
-        
+
+        from app.services.central_mind import CentralMind
+        mind = CentralMind(self.user)
+
         try:
-            agent.plan_trip(db, trip, run, self._log_step)
+            mind.plan_trip(db, trip, run, self._log_step)
         except Exception as e:
             warnings.append(f"Agent execution failed: {str(e)}")
             self._log_step(db, run, "agent_error", "failed", f"Execution error: {str(e)}")

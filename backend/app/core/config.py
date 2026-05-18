@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4"
+    agent_max_steps_reactive: int = 30
+    agent_max_steps_autonomous: int = 120
+    agent_max_token_budget: int = 800000
 
     model_config = SettingsConfigDict(
         env_file=(str(BACKEND_DIR / ".env"), str(WORKSPACE_DIR / ".env"), ".env", "../.env"),
