@@ -41,7 +41,7 @@ def stub_non_search_external_services(monkeypatch):
     def fake_summarize_recommendations(*_args, **_kwargs) -> str:
         return "Sugestoes consolidadas para testes."
 
-    def fake_openrouter_chat(*_args, **_kwargs) -> str:
+    def fake_llm_chat(*_args, **_kwargs) -> str:
         return (
             '{"assistant_message":"Sugestao valida para testes.",'
             '"proposed_changes":[{"type":"update_item","title":"Ajustar item","reason":"Teste","payload":{"item_id":1,"notes":"Teste"}}],'
@@ -73,9 +73,50 @@ def stub_non_search_external_services(monkeypatch):
         db.commit()
         return snapshots
 
+    def fake_central_mind_llm_chat(prompt, **kwargs):
+        """Returns agent tool-call JSON for the CentralMind loop."""
+        import json as _json
+        prompt_text = _json.dumps(prompt) if isinstance(prompt, list) else prompt
+
+        if "Places saved: 0" in prompt_text:
+            return _json.dumps({
+                "reasoning": "Search for places.",
+                "tool_calls": [{"name": "search_places_general", "params": {}}],
+            })
+        if "Active itinerary: None" in prompt_text:
+            return _json.dumps({
+                "reasoning": "Generate itinerary.",
+                "tool_calls": [{"name": "generate_itinerary", "params": {"rationale": "Initial plan"}}],
+            })
+        return _json.dumps({
+            "reasoning": "Done.",
+            "tool_calls": [{"name": "finish", "params": {"message": "Roteiro pronto."}}],
+        })
+
+    def fake_provider_search_places(self, trip):
+        now = datetime.now(UTC)
+        hours = {"mon": ["09:00-18:00"], "tue": ["09:00-18:00"], "wed": ["09:00-18:00"],
+                 "thu": ["09:00-18:00"], "fri": ["09:00-18:00"], "sat": ["09:00-18:00"], "sun": ["09:00-18:00"]}
+        return [
+            {"external_id": "OSM-1", "name": "Cristo Redentor", "category": "tourist_attraction",
+             "lat": -22.9519, "lng": -43.2105, "opening_hours_json": hours, "rating": 4.8,
+             "estimated_duration": 120, "source": "osm-nominatim", "confidence": 0.75,
+             "fetched_at": now, "summary": "Atracao turistica.", "deeplink": "https://osm.org/"},
+            {"external_id": "OSM-2", "name": "Pao de Acucar", "category": "tourist_attraction",
+             "lat": -22.9486, "lng": -43.1566, "opening_hours_json": hours, "rating": 4.7,
+             "estimated_duration": 120, "source": "osm-nominatim", "confidence": 0.75,
+             "fetched_at": now, "summary": "Atracao turistica.", "deeplink": "https://osm.org/"},
+            {"external_id": "OSM-3", "name": "Copacabana", "category": "beach",
+             "lat": -22.9711, "lng": -43.1822, "opening_hours_json": hours, "rating": 4.6,
+             "estimated_duration": 180, "source": "osm-nominatim", "confidence": 0.75,
+             "fetched_at": now, "summary": "Praia famosa.", "deeplink": "https://osm.org/"},
+        ]
+
     monkeypatch.setattr("app.services.planner.summarize_itinerary", fake_summarize_itinerary)
     monkeypatch.setattr("app.services.agent_tools.summarize_recommendations", fake_summarize_recommendations)
-    monkeypatch.setattr("app.services.chat.openrouter_chat", fake_openrouter_chat)
-    monkeypatch.setattr("app.services.agent.openrouter_chat", fake_openrouter_chat)
+    monkeypatch.setattr("app.services.chat.llm_chat", fake_llm_chat)
+    monkeypatch.setattr("app.services.central_mind.llm_chat", fake_central_mind_llm_chat)
     monkeypatch.setattr("app.services.planner.estimate_route", fake_estimate_route)
-    monkeypatch.setattr("app.services.workflow.refresh_trip_weather", fake_refresh_trip_weather)
+    monkeypatch.setattr("app.services.routing.estimate_route", fake_estimate_route)
+    monkeypatch.setattr("app.services.weather.refresh_trip_weather", fake_refresh_trip_weather)
+    monkeypatch.setattr("app.services.providers.TravelProvider.search_places", fake_provider_search_places)

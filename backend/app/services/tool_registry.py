@@ -959,7 +959,6 @@ def _handle_get_day_schedule(
 def _handle_finalize_itinerary(
     db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
 ) -> dict[str, Any]:
-    from decimal import Decimal
     from app.models.entities import PlanMutation
     from app.services.agent_tools import get_active_itinerary
     from app.services.llm import summarize_itinerary, LLMIntegrationError
@@ -972,7 +971,7 @@ def _handle_finalize_itinerary(
         return {"error": "Itinerary has no items. Place items before finalizing."}
 
     n_days = len(set(item.date for item in active.items))
-    active.total_estimated_cost = Decimal("45.00") * len(active.items)
+    active.total_estimated_cost = trip.budget / max(len(active.items), 1)
 
     summary = params.get("summary")
     if not summary:
