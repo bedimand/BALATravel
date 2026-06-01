@@ -354,7 +354,7 @@ class WorkflowService:
         db.add(state)
         db.commit()
         self._create_change_decision(db, trip, message, run=run)
-        self._log_step(db, run, "workflow_message", "completed", "Pedido do usuario transformado em proposta revisavel.", {"message": message, "scope": scope})
+        self._log_step(db, run, "workflow_message", "completed", "Pedido do usuario transformado em proposta revisavel.", None, {"message": message, "scope": scope})
         self._finish_run(db, state, run, stage_status="waiting_user")
         return self.build_workspace(db, trip_id)
 
@@ -440,7 +440,7 @@ class WorkflowService:
             payload_json={"proposal": proposal},
             run=run,
         )
-        self._log_step(db, run, "replan_day", "completed", "Pedido de replanejamento preparado para aprovacao.", {"date": target_date.isoformat(), "goal": goal})
+        self._log_step(db, run, "replan_day", "completed", "Pedido de replanejamento preparado para aprovacao.", None, {"date": target_date.isoformat(), "goal": goal})
         self._finish_run(db, state, run, stage_status="waiting_user")
         return self.build_workspace(db, trip.id)
 
@@ -523,6 +523,7 @@ class WorkflowService:
             "rebuild_plan_from_selection",
             "completed",
             "Roteiro reconstruido com base na selecao manual de lugares.",
+            None,
             {"selected_place_count": len(selected_places)},
             {"itinerary_id": active.id if active else None},
         )
