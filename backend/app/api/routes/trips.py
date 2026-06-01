@@ -1,12 +1,14 @@
 import threading
+from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_current_user
 from app.core.database import get_db, SessionLocal
-from app.models.entities import ItineraryItem, ItineraryVersion, Place, Trip, User
+from app.models.entities import ItineraryItem, ItineraryVersion, Place, Trip, User, WorkflowRun
 from app.schemas.trip import (
+    BackgroundRunResponse,
     ChatApplyRequest,
     ChatRequest,
     ChatResponse,
@@ -41,6 +43,7 @@ from app.services.workflow import WorkflowService
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
+
 def start_trip_background(user_id: int, trip_id: int) -> None:
     db_session: Session = SessionLocal()
     try:
@@ -50,6 +53,44 @@ def start_trip_background(user_id: int, trip_id: int) -> None:
         service.start(db_session, trip_id, run_type="setup")
     except Exception as e:
         print(f"Background task failed for trip {trip_id}: {e}")
+    finally:
+        db_session.close()
+
+
+def _run_workflow_background(user_id: int, trip_id: int, run_type: str, run_id: int) -> None:
+    db_session: Session = SessionLocal()
+    try:
+        user = db_session.get(User, user_id)
+        if not user:
+            return
+        service = WorkflowService(user)
+        service._progress_workflow(db_session, trip_id, run_type, existing_run_id=run_id)
+    except Exception as e:
+        print(f"Background workflow ({run_type}) failed for trip {trip_id}: {e}")
+        run = db_session.get(WorkflowRun, run_id)
+        if run and run.status == "running":
+            run.status = "failed"
+            run.completed_at = datetime.now(UTC)
+            db_session.commit()
+    finally:
+        db_session.close()
+
+
+def _run_rebuild_background(user_id: int, trip_id: int, run_id: int) -> None:
+    db_session: Session = SessionLocal()
+    try:
+        user = db_session.get(User, user_id)
+        if not user:
+            return
+        service = WorkflowService(user)
+        service.rebuild_plan_from_selection(db_session, trip_id, existing_run_id=run_id)
+    except Exception as e:
+        print(f"Background rebuild failed for trip {trip_id}: {e}")
+        run = db_session.get(WorkflowRun, run_id)
+        if run and run.status == "running":
+            run.status = "failed"
+            run.completed_at = datetime.now(UTC)
+            db_session.commit()
     finally:
         db_session.close()
 
@@ -185,28 +226,24 @@ def search_trip_options(trip_id: int, current_user: User = Depends(get_current_u
     )
 
 
-@router.post("/{trip_id}/itinerary/generate", response_model=ItineraryResponse)
-def generate_itinerary(trip_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> ItineraryResponse:
-    result = AgentCoordinator(current_user).generate(db, trip_id, intent="generate")
+@router.post("/{trip_id}/itinerary/generate", response_model=BackgroundRunResponse, status_code=202)
+def generate_itinerary(trip_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> BackgroundRunResponse:
     trip = _get_trip_or_404(db, current_user, trip_id)
-    itinerary = _active_itinerary_or_404(trip)
-    return ItineraryResponse(
-        itinerary=itinerary,
-        warnings=list(dict.fromkeys([*itinerary.warnings, *result.warnings])),
-        assistant_summary=result.run.assistant_message,
-    )
+    service = WorkflowService(current_user)
+    state, run = service._start_run(db, trip, "generate")
+    t = threading.Thread(target=_run_workflow_background, args=(current_user.id, trip_id, "generate", run.id))
+    t.start()
+    return BackgroundRunResponse(run_id=run.id)
 
 
-@router.post("/{trip_id}/itinerary/replan", response_model=ItineraryResponse)
-def replan_itinerary(trip_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> ItineraryResponse:
-    result = AgentCoordinator(current_user).generate(db, trip_id, intent="replan")
+@router.post("/{trip_id}/itinerary/replan", response_model=BackgroundRunResponse, status_code=202)
+def replan_itinerary(trip_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> BackgroundRunResponse:
     trip = _get_trip_or_404(db, current_user, trip_id)
-    itinerary = _active_itinerary_or_404(trip)
-    return ItineraryResponse(
-        itinerary=itinerary,
-        warnings=list(dict.fromkeys([*itinerary.warnings, *result.warnings])),
-        assistant_summary=result.run.assistant_message,
-    )
+    service = WorkflowService(current_user)
+    state, run = service._start_run(db, trip, "replan")
+    t = threading.Thread(target=_run_workflow_background, args=(current_user.id, trip_id, "replan", run.id))
+    t.start()
+    return BackgroundRunResponse(run_id=run.id)
 
 
 @router.post("/{trip_id}/chat", response_model=ChatResponse)
@@ -282,15 +319,19 @@ def get_trip_workspace(trip_id: int, current_user: User = Depends(get_current_us
     return WorkflowService(current_user).build_workspace(db, trip_id)
 
 
-@router.post("/{trip_id}/workflow/start", response_model=WorkspaceResponse)
+@router.post("/{trip_id}/workflow/start", response_model=BackgroundRunResponse, status_code=202)
 def start_trip_workflow(
     trip_id: int,
     payload: WorkflowStartRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> WorkspaceResponse:
-    _get_trip_or_404(db, current_user, trip_id)
-    return WorkflowService(current_user).start(db, trip_id, run_type=payload.run_type)
+) -> BackgroundRunResponse:
+    trip = _get_trip_or_404(db, current_user, trip_id)
+    service = WorkflowService(current_user)
+    state, run = service._start_run(db, trip, payload.run_type)
+    t = threading.Thread(target=_run_workflow_background, args=(current_user.id, trip_id, payload.run_type, run.id))
+    t.start()
+    return BackgroundRunResponse(run_id=run.id)
 
 
 @router.post("/{trip_id}/workflow/messages", response_model=WorkspaceResponse)
@@ -316,14 +357,18 @@ def decide_workflow_request(
     return WorkflowService(current_user).decide(db, trip_id, decision_id, payload.action, payload.selected_option_id)
 
 
-@router.post("/{trip_id}/workflow/refresh", response_model=WorkspaceResponse)
+@router.post("/{trip_id}/workflow/refresh", response_model=BackgroundRunResponse, status_code=202)
 def refresh_trip_workflow(
     trip_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> WorkspaceResponse:
-    _get_trip_or_404(db, current_user, trip_id)
-    return WorkflowService(current_user).refresh(db, trip_id)
+) -> BackgroundRunResponse:
+    trip = _get_trip_or_404(db, current_user, trip_id)
+    service = WorkflowService(current_user)
+    state, run = service._start_run(db, trip, "refresh")
+    t = threading.Thread(target=_run_workflow_background, args=(current_user.id, trip_id, "refresh", run.id))
+    t.start()
+    return BackgroundRunResponse(run_id=run.id)
 
 
 @router.post("/{trip_id}/workflow/replan-day", response_model=WorkspaceResponse)
@@ -337,14 +382,18 @@ def replan_trip_day(
     return WorkflowService(current_user).replan_day(db, trip_id, payload.date, payload.goal)
 
 
-@router.post("/{trip_id}/workflow/rebuild-plan", response_model=WorkspaceResponse)
+@router.post("/{trip_id}/workflow/rebuild-plan", response_model=BackgroundRunResponse, status_code=202)
 def rebuild_trip_plan(
     trip_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> WorkspaceResponse:
-    _get_trip_or_404(db, current_user, trip_id)
-    return WorkflowService(current_user).rebuild_plan_from_selection(db, trip_id)
+) -> BackgroundRunResponse:
+    trip = _get_trip_or_404(db, current_user, trip_id)
+    service = WorkflowService(current_user)
+    state, run = service._start_run(db, trip, "selection_rebuild")
+    t = threading.Thread(target=_run_rebuild_background, args=(current_user.id, trip_id, run.id))
+    t.start()
+    return BackgroundRunResponse(run_id=run.id)
 
 
 @router.get("/{trip_id}/today", response_model=TodaySummaryRead | None)

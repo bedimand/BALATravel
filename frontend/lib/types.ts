@@ -48,13 +48,11 @@ export type ItineraryVersion = {
   items: ItineraryItem[];
 };
 
-export type WorkflowStage = "planning" | "approved" | "booked";
-
 export type WorkflowResponse = {
-  stage: WorkflowStage;
-  stage_status: "idle" | "running" | "completed" | "failed";
-  step: number;
-  total_steps: number;
+  current_stage: string;
+  stage_status: string;
+  active_workflow_run_id: number | null;
+  last_user_goal: string | null;
 };
 
 export type DecisionOption = {
@@ -74,6 +72,7 @@ export type Decision = {
 export type WorkspaceResponse = {
   trip: Trip;
   workflow: WorkflowResponse;
+  workflow_runs: WorkflowRun[];
   map: MapResponse;
   decisions: Decision[];
   hotels: HotelOption[];
@@ -113,6 +112,23 @@ export type MapResponse = {
   }>;
 };
 
+export type FlightLeg = {
+  departure_airport: string;
+  departure_time: string;
+  arrival_airport: string;
+  arrival_time: string;
+};
+
+export type FlightOption = {
+  id: number;
+  provider_ref: string;
+  price: number;
+  currency: string;
+  legs_json: FlightLeg[];
+  baggage_summary: string | null;
+  deeplink?: string;
+};
+
 export type HotelOption = {
   id: number;
   name: string;
@@ -122,10 +138,129 @@ export type HotelOption = {
   description: string | null;
   rating: number | null;
   price_per_night: number | null;
+  total_price: number | null;
+  deeplink?: string;
   is_selected: boolean;
 };
 
 export type PlanResponse = {
   itinerary: ItineraryVersion;
   map: MapResponse;
+};
+
+export type BackgroundRunResponse = {
+  run_id: number;
+  status: string;
+  message: string;
+};
+
+export type WorkflowRun = {
+  id: number;
+  run_type: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+};
+
+export type AgentStep = {
+  step_key: string;
+  status: string;
+  summary: string;
+  reasoning: string | null;
+  duration_ms: number | null;
+};
+
+export type AgentStatusResponse = {
+  run_id: number;
+  status: string;
+  current_step_key: string | null;
+  current_step_summary: string | null;
+  progress_percent: number;
+  steps: AgentStep[];
+};
+
+export type AgentMessageResponse = {
+  run_id: number;
+  assistant_message: string;
+  warnings: string[];
+  applied_changes: Record<string, unknown>[];
+  proposed_followups: string[];
+  itinerary_version_id: number | null;
+  trip_snapshot: Record<string, unknown>;
+};
+
+export type AgentToolCall = {
+  id: number;
+  tool_name: string;
+  status: string;
+};
+
+export type AgentRunEntry = {
+  id: number;
+  user_message: string | null;
+  assistant_message: string | null;
+  tool_calls: AgentToolCall[];
+  warnings: string[];
+};
+
+export type AgentThread = {
+  trip_id: number;
+  runs: AgentRunEntry[];
+  mutations: Record<string, unknown>[];
+};
+
+export type TodaySummary = {
+  date: string;
+  headline: string;
+  quick_actions: string[];
+  item_ids: number[];
+  route_burden_min: number;
+};
+
+export type Place = {
+  id: number;
+  name: string;
+  category: string;
+  lat: number;
+  lng: number;
+  rating: number;
+  is_selected: boolean;
+  summary: string | null;
+  image_url: string | null;
+  deeplink?: string;
+};
+
+export type SearchResponse = {
+  trip_id: number;
+  destination: string;
+  flights: Record<string, unknown>[];
+  hotels: Record<string, unknown>[];
+  places: Place[];
+  warnings: string[];
+};
+
+export type ItineraryResponse = {
+  itinerary: ItineraryVersion;
+  warnings: string[];
+  assistant_summary: string;
+};
+
+export type UserProfile = {
+  id: number;
+  name: string;
+  email: string;
+  locale: string;
+  currency: string;
+};
+
+export type ChatResponse = {
+  message: string;
+  proposed_changes: ProposedChange[];
+};
+
+export type ProposedChange = {
+  type: string;
+  title: string;
+  reason: string;
+  payload: Record<string, unknown>;
 };

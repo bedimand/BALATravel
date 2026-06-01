@@ -1,12 +1,16 @@
+import threading
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_current_user
-from app.core.database import get_db
-from app.models.entities import AgentRun, PlanMutation, Trip, User
-from app.schemas.trip import AgentMessageRequest, AgentMessageResponse, AgentRunRead, AgentThreadResponse
+from app.core.database import get_db, SessionLocal
+from app.models.entities import AgentRun, PlanMutation, Trip, User, WorkflowRun
+from app.schemas.trip import AgentMessageRequest, AgentMessageResponse, AgentRunRead, AgentThreadResponse, BackgroundRunResponse
 from app.services.agent import AgentCoordinator
+from app.services.workflow import WorkflowService
 
 
 router = APIRouter(prefix="/trips", tags=["agent"])
@@ -19,24 +23,42 @@ def _get_owned_trip_or_404(db: Session, current_user: User, trip_id: int) -> Tri
     return trip
 
 
-@router.post("/{trip_id}/agent/messages", response_model=AgentMessageResponse)
+def _agent_message_background(user_id: int, trip_id: int, message: str, workflow_run_id: int) -> None:
+    db_session: Session = SessionLocal()
+    try:
+        user = db_session.get(User, user_id)
+        if not user:
+            return
+        AgentCoordinator(user).send_message(db_session, trip_id, message)
+        run = db_session.get(WorkflowRun, workflow_run_id)
+        if run:
+            run.status = "completed"
+            run.completed_at = datetime.now(UTC)
+            db_session.commit()
+    except Exception as e:
+        print(f"Background agent message failed for trip {trip_id}: {e}")
+        run = db_session.get(WorkflowRun, workflow_run_id)
+        if run and run.status == "running":
+            run.status = "failed"
+            run.completed_at = datetime.now(UTC)
+            db_session.commit()
+    finally:
+        db_session.close()
+
+
+@router.post("/{trip_id}/agent/messages", response_model=BackgroundRunResponse, status_code=202)
 def send_agent_message(
     trip_id: int,
     payload: AgentMessageRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> AgentMessageResponse:
-    _get_owned_trip_or_404(db, current_user, trip_id)
-    result = AgentCoordinator(current_user).send_message(db, trip_id, payload.message)
-    return AgentMessageResponse(
-        run_id=result.run.id,
-        assistant_message=result.run.assistant_message,
-        warnings=result.warnings,
-        applied_changes=result.applied_changes,
-        proposed_followups=result.proposed_followups,
-        itinerary_version_id=result.itinerary_version_id,
-        trip_snapshot=result.trip_snapshot,
-    )
+) -> BackgroundRunResponse:
+    trip = _get_owned_trip_or_404(db, current_user, trip_id)
+    service = WorkflowService(current_user)
+    state, run = service._start_run(db, trip, "agent_message")
+    t = threading.Thread(target=_agent_message_background, args=(current_user.id, trip_id, payload.message, run.id))
+    t.start()
+    return BackgroundRunResponse(run_id=run.id)
 
 
 @router.get("/{trip_id}/agent/runs", response_model=list[AgentRunRead])

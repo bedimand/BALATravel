@@ -542,6 +542,12 @@ class AgentStatusResponse(BaseModel):
     steps: list[AgentStepRead] = Field(default_factory=list)
 
 
+class BackgroundRunResponse(BaseModel):
+    run_id: int
+    status: str = "running"
+    message: str = "Processing started. Poll /agent-status for progress."
+
+
 ItineraryItemRead.model_rebuild()
 ItineraryVersionRead.model_rebuild()
 TripRead.model_rebuild()

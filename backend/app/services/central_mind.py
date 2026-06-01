@@ -375,17 +375,30 @@ To signal completion:
     def _format_itinerary_for_prompt(self, active: ItineraryVersion) -> str:
         if not active or not active.items:
             return ""
-        lines = ["\n== ACTIVE ITINERARY ITEMS =="]
         from collections import defaultdict
         by_day: dict[str, list] = defaultdict(list)
         for item in active.items:
             by_day[item.date.isoformat()].append(item)
-        for day_key in sorted(by_day.keys()):
-            lines.append(f"  {day_key}:")
-            for item in sorted(by_day[day_key], key=lambda x: x.start_time):
-                lines.append(
-                    f"    id={item.id} {item.start_time.strftime('%H:%M')}-{item.end_time.strftime('%H:%M')} \"{item.title}\" ({item.item_type})"
-                )
+
+        all_days = sorted(by_day.keys())
+        MAX_DETAIL_DAYS = 10
+
+        if len(all_days) <= MAX_DETAIL_DAYS:
+            detail_days = set(all_days)
+        else:
+            days_by_priority = sorted(all_days, key=lambda d: (len(by_day[d]), d))
+            detail_days = set(days_by_priority[:MAX_DETAIL_DAYS])
+
+        lines = ["\n== ACTIVE ITINERARY ITEMS =="]
+        for day_key in all_days:
+            if day_key in detail_days:
+                lines.append(f"  {day_key}:")
+                for item in sorted(by_day[day_key], key=lambda x: x.start_time):
+                    lines.append(
+                        f"    id={item.id} {item.start_time.strftime('%H:%M')}-{item.end_time.strftime('%H:%M')} \"{item.title}\" ({item.item_type})"
+                    )
+            else:
+                lines.append(f"  {day_key}: {len(by_day[day_key])} items (summarized)")
         return "\n".join(lines)
 
     def _get_mode_instructions(self, db: Session, context: MindContext, active: ItineraryVersion | None) -> str:
@@ -512,7 +525,7 @@ To signal completion:
         offset = len(history) - len(recent)
         for i, entry in enumerate(recent):
             result_str = json.dumps(entry["result"], ensure_ascii=False)
-            max_len = 3000 if entry["tool"] in ("list_saved_places", "get_day_context") else 300
+            max_len = 1500 if entry["tool"] in ("list_saved_places", "get_day_context") else 300
             if len(result_str) > max_len:
                 result_str = result_str[:max_len] + "..."
             status = "OK" if entry.get("success", True) else "FAILED"

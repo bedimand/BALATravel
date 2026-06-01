@@ -291,9 +291,13 @@ class WorkflowService:
             return
         raise HTTPException(status_code=400, detail="Unsupported proposal type.")
 
-    def _progress_workflow(self, db: Session, trip_id: int, run_type: str) -> WorkflowExecutionResult:
+    def _progress_workflow(self, db: Session, trip_id: int, run_type: str, existing_run_id: int | None = None) -> WorkflowExecutionResult:
         trip = self._load_trip(db, trip_id)
-        state, run = self._start_run(db, trip, run_type)
+        if existing_run_id:
+            run = db.get(WorkflowRun, existing_run_id)
+            state = self._get_or_create_state(db, trip)
+        else:
+            state, run = self._start_run(db, trip, run_type)
         warnings: list[str] = []
 
         from app.services.central_mind import CentralMind
@@ -478,7 +482,7 @@ class WorkflowService:
         )
         return self.build_workspace(db, trip_id)
 
-    def rebuild_plan_from_selection(self, db: Session, trip_id: int) -> WorkspaceResponse:
+    def rebuild_plan_from_selection(self, db: Session, trip_id: int, existing_run_id: int | None = None) -> WorkspaceResponse:
         from app.services.central_mind import CentralMind
 
         trip = self._load_trip(db, trip_id)
@@ -486,7 +490,11 @@ class WorkflowService:
         if not selected_places:
             raise HTTPException(status_code=400, detail="Select at least one place before rebuilding the plan.")
 
-        state, run = self._start_run(db, trip, "selection_rebuild")
+        if existing_run_id:
+            run = db.get(WorkflowRun, existing_run_id)
+            state = self._get_or_create_state(db, trip)
+        else:
+            state, run = self._start_run(db, trip, "selection_rebuild")
         state.current_stage = "draft_itinerary"
         db.add(state)
         db.commit()

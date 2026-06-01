@@ -64,6 +64,8 @@ class ToolRegistry:
             return ToolResult(tool_name=name, success=False, error=f"Unknown tool: {name}")
         try:
             result = tool.handler(db=db, trip=trip, run=run, params=params)
+            if isinstance(result, dict) and "error" in result:
+                return ToolResult(tool_name=name, success=False, data=result, error=result["error"])
             return ToolResult(tool_name=name, success=True, data=result if isinstance(result, dict) else {"result": result})
         except Exception as exc:
             return ToolResult(tool_name=name, success=False, error=str(exc))

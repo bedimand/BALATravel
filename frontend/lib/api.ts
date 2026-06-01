@@ -2,6 +2,7 @@ import type {
   AgentMessageResponse,
   AgentThread,
   AgentStatusResponse,
+  BackgroundRunResponse,
   ChatResponse,
   ItineraryResponse,
   MapResponse,
@@ -55,9 +56,9 @@ export const api = {
     request<WorkspaceResponse>(`/trips/${tripId}/places/${placeId}`, { method: "PATCH", body }),
   searchTrip: (tripId: string | number) => request<SearchResponse>(`/trips/${tripId}/search`, { method: "POST" }),
   generateItinerary: (tripId: string | number) =>
-    request<ItineraryResponse>(`/trips/${tripId}/itinerary/generate`, { method: "POST" }),
+    request<BackgroundRunResponse>(`/trips/${tripId}/itinerary/generate`, { method: "POST" }),
   replanItinerary: (tripId: string | number) =>
-    request<ItineraryResponse>(`/trips/${tripId}/itinerary/replan`, { method: "POST" }),
+    request<BackgroundRunResponse>(`/trips/${tripId}/itinerary/replan`, { method: "POST" }),
   chatTrip: (tripId: string | number, body: { message: string }) =>
     request<ChatResponse>(`/trips/${tripId}/chat`, { method: "POST", body }),
   applyChatChange: (tripId: string | number, change: ProposedChange) =>
@@ -70,13 +71,13 @@ export const api = {
   createShareLink: (tripId: string | number) =>
     request<{ token: string; public_url: string; expires_at: string }>(`/trips/${tripId}/share-links`, { method: "POST" }),
   sendAgentMessage: (tripId: string | number, body: { message: string }) =>
-    request<AgentMessageResponse>(`/trips/${tripId}/agent/messages`, { method: "POST", body }),
+    request<BackgroundRunResponse>(`/trips/${tripId}/agent/messages`, { method: "POST", body }),
   getAgentThread: (tripId: string | number) => request<AgentThread>(`/trips/${tripId}/agent/thread`),
   rollbackAgentVersion: (tripId: string | number, versionId: string | number) =>
     request<AgentMessageResponse>(`/trips/${tripId}/agent/rollback/${versionId}`, { method: "POST" }),
   getWorkspace: (tripId: string | number) => request<WorkspaceResponse>(`/trips/${tripId}/workspace`),
   startWorkflow: (tripId: string | number, runType = "setup") =>
-    request<WorkspaceResponse>(`/trips/${tripId}/workflow/start`, { method: "POST", body: { run_type: runType } }),
+    request<BackgroundRunResponse>(`/trips/${tripId}/workflow/start`, { method: "POST", body: { run_type: runType } }),
   sendWorkflowMessage: (tripId: string | number, body: { message: string; scope?: string }) =>
     request<WorkspaceResponse>(`/trips/${tripId}/workflow/messages`, { method: "POST", body }),
   decideWorkflow: (
@@ -85,11 +86,11 @@ export const api = {
     body: { action: "approve" | "reject" | "select"; selected_option_id?: string }
   ) => request<WorkspaceResponse>(`/trips/${tripId}/workflow/decisions/${decisionId}`, { method: "POST", body }),
   refreshWorkflow: (tripId: string | number) =>
-    request<WorkspaceResponse>(`/trips/${tripId}/workflow/refresh`, { method: "POST" }),
+    request<BackgroundRunResponse>(`/trips/${tripId}/workflow/refresh`, { method: "POST" }),
   replanDay: (tripId: string | number, body: { date: string; goal: string }) =>
     request<WorkspaceResponse>(`/trips/${tripId}/workflow/replan-day`, { method: "POST", body }),
   rebuildPlanFromSelection: (tripId: string | number) =>
-    request<WorkspaceResponse>(`/trips/${tripId}/workflow/rebuild-plan`, { method: "POST" }),
+    request<BackgroundRunResponse>(`/trips/${tripId}/workflow/rebuild-plan`, { method: "POST" }),
   getToday: (tripId: string | number) => request<TodaySummary | null>(`/trips/${tripId}/today`),
   getAgentStatus: (tripId: string | number) => request<AgentStatusResponse>(`/trips/${tripId}/agent-status`)
 };

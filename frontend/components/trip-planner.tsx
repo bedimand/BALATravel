@@ -33,7 +33,8 @@ export function TripPlanner({ tripId }: Props) {
     loadWorkspace();
   }, [tripId]);
 
-  const isAgentThinking = workspace?.workflow.stage_status === "running" || workspace?.workflow.stage_status === "idle";
+  const isAgentThinking = workspace?.workflow.stage_status === "running"
+    || workspace?.workflow_runs?.some(r => r.status === "running");
 
   const dates = useMemo(() => {
     if (!workspace) return [];

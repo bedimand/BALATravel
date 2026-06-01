@@ -66,9 +66,9 @@ export function ChatPanel({ tripId, summary, currentStep, onRunComplete }: Props
     setSending(true);
     setError(null);
     try {
-      const response = await api.sendAgentMessage(tripId, { message });
+      await api.sendAgentMessage(tripId, { message });
       setDraft("");
-      await Promise.all([refreshThread(), onRunComplete(response.assistant_message, response.warnings)]);
+      await onRunComplete("", []);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Falha ao executar a solicitacao.");
     } finally {
