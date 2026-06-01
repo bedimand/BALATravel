@@ -19,11 +19,8 @@ from app.models.entities import (
     PlanMutation,
     Trip,
 )
-from app.services.llm import LLMIntegrationError, summarize_recommendations
-from app.services.planner import build_itinerary
+from app.services.llm import LLMIntegrationError
 from app.services.providers import ProviderIntegrationError, get_travel_provider, replace_places
-from app.services.routing import RoutingIntegrationError
-from app.services.weather import WeatherIntegrationError
 
 
 provider = get_travel_provider()
@@ -253,45 +250,6 @@ def tool_search_all(db: Session, trip: Trip) -> tuple[dict[str, Any], list[str]]
     return result, []
 
 
-def tool_generate_itinerary(db: Session, trip: Trip, run: AgentRun | None = None, rationale: str = "") -> tuple[ItineraryVersion, PlanMutation]:
-    places = list(db.scalars(select(Place).where(Place.trip_id == trip.id).order_by(Place.rating.desc())))
-    blockers = get_planning_blockers(trip, places)
-    if blockers:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Missing planning context: {', '.join(blockers)}. Search and collect these before generating an itinerary.",
-        )
-    previous = get_active_itinerary(trip)
-    try:
-        itinerary = build_itinerary(db, trip, places, trip.hotels)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    except (RoutingIntegrationError, WeatherIntegrationError) as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    try:
-        itinerary.assistant_summary = f"{itinerary.assistant_summary} {summarize_recommendations(trip, trip.hotels, places)}".strip()
-    except LLMIntegrationError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    db.add(itinerary)
-    db.commit()
-    db.refresh(itinerary)
-    mutation = PlanMutation(
-        trip_id=trip.id,
-        run_id=run.id if run else None,
-        from_itinerary_version_id=previous.id if previous else None,
-        to_itinerary_version_id=itinerary.id,
-        mutation_type="generate_itinerary",
-        rationale=rationale or "Generated a fresh itinerary from current live search results.",
-        changed_item_ids=[item.id for item in itinerary.items],
-    )
-    db.add(mutation)
-    db.commit()
-    db.refresh(mutation)
-    return itinerary, mutation
-
-
-def tool_replan_itinerary(db: Session, trip: Trip, run: AgentRun | None = None, rationale: str = "") -> tuple[ItineraryVersion, PlanMutation]:
-    return tool_generate_itinerary(db, trip, run=run, rationale=rationale or "Replanned the itinerary using the latest trip context.")
 
 
 def tool_update_item(

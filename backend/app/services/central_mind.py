@@ -220,7 +220,7 @@ class CentralMind:
                     "success": result.success,
                 })
 
-                if result.success and tool_name in ("generate_itinerary", "replan_itinerary", "reorder_day", "update_item", "remove_item", "insert_item", "rollback_version", "start_itinerary", "place_item", "finalize_itinerary"):
+                if result.success and tool_name in ("reorder_day", "update_item", "remove_item", "insert_item", "rollback_version", "start_itinerary", "place_item", "finalize_itinerary"):
                     context.applied_changes.append({
                         "mutation_type": tool_name,
                         "rationale": params.get("rationale", ""),
@@ -311,9 +311,9 @@ class CentralMind:
 
         interests_str = ", ".join(trip.interests) if hasattr(trip, "interests") and trip.interests else "exploracao geral"
         dietary_str = ", ".join(trip.dietary_restrictions) if hasattr(trip, "dietary_restrictions") and trip.dietary_restrictions else "nenhuma"
-        n_days = max((trip.end_date - trip.start_date).days, 1)
+        n_days = max((trip.end_date - trip.start_date).days + 1, 1)
 
-        mode_instructions = self._get_mode_instructions(context, active)
+        mode_instructions = self._get_mode_instructions(db, context, active)
         tools_json = json.dumps(self.registry.list_for_llm(), indent=2, ensure_ascii=False)
 
         return f"""You are the Central Mind of BALATravel — a fully autonomous travel planning intelligence.
@@ -388,33 +388,96 @@ To signal completion:
                 )
         return "\n".join(lines)
 
-    def _get_mode_instructions(self, context: MindContext, active: ItineraryVersion | None) -> str:
+    def _get_mode_instructions(self, db: Session, context: MindContext, active: ItineraryVersion | None) -> str:
         if context.mode == "autonomous":
+            places_summary = self._get_places_summary(db, context.trip.id)
+            has_places = places_summary["total"] > 0
+
+            replan_hint = ""
+            if has_places:
+                replan_hint = (
+                    f"\nNOTE: {places_summary['total']} places are already saved for this trip. "
+                    "You may skip searching and go directly to list_saved_places if the existing pool is adequate. "
+                    "Only re-search if you believe the pool lacks diversity or doesn't cover the trip duration well."
+                )
+
+            pace = getattr(context.trip, "travel_pace", None) or "balanced"
+            if pace == "relaxed":
+                pace_guidance = "Traveler prefers a RELAXED pace. Cap at 4 activities per day. Leave long gaps for spontaneous exploration."
+            elif pace in ("intensive", "fast"):
+                pace_guidance = "Traveler wants an INTENSIVE pace. Schedule 6-7 activities per day. Maximize coverage."
+            else:
+                pace_guidance = "Traveler has a BALANCED pace. Target 5 activities per day."
+
             return (
-                "You ARE the travel planner. Build the entire itinerary yourself using your tools.\n\n"
-                "WORKFLOW:\n"
-                "1. Search for places (search_places_by_interest — 4-6 diverse queries covering culture, food, beaches, parks, shopping, nightlife)\n"
-                "2. Call list_saved_places to see what you have\n"
-                "3. Call start_itinerary to create an empty schedule\n"
-                "4. Use place_item repeatedly to build the schedule day by day, activity by activity\n"
-                "5. Call finalize_itinerary when done\n"
-                "6. Call finish\n\n"
-                "SCHEDULING RULES:\n"
-                "- Cover ALL days of the trip. Every single day must have 4-6 activities.\n"
-                "- Morning: cultural sites, museums, parks (09:00-12:00)\n"
-                "- Lunch: restaurant (12:00-14:00)\n"
-                "- Afternoon: beaches, shopping, landmarks (14:00-18:00)\n"
-                "- Dinner: restaurant (19:00-21:00)\n"
-                "- Evening (optional): bars, nightlife (21:00+)\n"
-                "- NEVER put 2 restaurants back-to-back. Alternate between food and non-food activities.\n"
-                "- Max 1 restaurant for lunch + 1 for dinner per day. Fill the rest with non-food activities.\n"
-                "- ALWAYS use title + lat + lng when calling place_item. Do NOT use place_id.\n\n"
-                "EFFICIENCY:\n"
-                "- You can place multiple items in a single tool_calls array (batch them).\n"
-                "- Call list_saved_places ONCE. Remember the place IDs — do NOT call it again.\n"
-                "- Call start_itinerary ONCE. Do NOT restart it after placing items.\n"
-                "- Place ALL days in sequence without pausing to search or list again.\n"
-                "- Target: complete the full itinerary in under 40 steps total."
+                "You ARE the travel planner. Build a complete, realistic, day-by-day itinerary that a real person can follow.\n"
+                f"{replan_hint}\n\n"
+                "== WORKFLOW ==\n"
+                "1. Search for places (search_places_by_interest — 4-6 diverse queries)\n"
+                "2. Call list_saved_places ONCE to review all options\n"
+                "3. Call get_weather_forecast\n"
+                "4. Call start_itinerary\n"
+                "5. For EACH day: call get_day_context, then place ALL items for that day in one batch\n"
+                "6. Call get_day_schedule for each day to self-check, fix any issues\n"
+                "7. Call finalize_itinerary, then finish\n\n"
+                f"== PACE ==\n{pace_guidance}\n\n"
+                "== DAILY STRUCTURE (mandatory) ==\n"
+                "Every single day MUST follow this skeleton. Fill each slot:\n\n"
+                "  MORNING (09:00-12:00): 2-3 activities\n"
+                "    Cultural sites, museums, parks, historic landmarks.\n"
+                "    Start from accommodation, move to the day's main area.\n\n"
+                "  LUNCH (12:30-14:00): 1 restaurant\n"
+                "    Choose one NEAR the morning cluster. Never skip lunch.\n\n"
+                "  AFTERNOON (14:30-18:00): 2-3 activities\n"
+                "    Markets, shopping, lighter attractions, churches, scenic walks.\n"
+                "    Stay in the same geographic zone when possible.\n\n"
+                "  DINNER (19:30-21:30): 1 restaurant\n"
+                "    Choose based on evening location or near hotel. Never skip dinner.\n\n"
+                "  OPTIONAL EVENING (21:30+): bar, show, or nightlife if the traveler's style fits.\n\n"
+                "This means each day has 6-8 items minimum: morning activities + lunch + afternoon activities + dinner.\n"
+                "If a day has fewer than 6 items or is missing lunch/dinner, it is INCOMPLETE.\n\n"
+                "== GEOGRAPHIC LOGIC ==\n"
+                "- Each day should focus on ONE area/neighborhood of the city.\n"
+                "- Pick a cluster of nearby places and fill the day from them.\n"
+                "- Travel between consecutive items should be <20min. If you see >20min in the response, you're zigzagging.\n"
+                "- Day 1: closest area to hotel. Day 2+: expand outward to other neighborhoods.\n\n"
+                "== DURATIONS (you decide) ==\n"
+                "You determine how long each activity takes. Guidelines:\n"
+                "  Squares, viewpoints, bridges: 30-45min\n"
+                "  Restaurants: 60-90min\n"
+                "  Small museums, galleries, churches: 45-75min\n"
+                "  Large museums, cultural centers: 90-120min\n"
+                "  Parks, beaches: 60-150min\n"
+                "  Markets, shopping: 60-90min\n"
+                "  Bars: 90-120min\n"
+                "Use your knowledge of the specific place. A world-famous museum deserves more time than a local gallery.\n\n"
+                "== HARD RULES ==\n"
+                "- EVERY day must have lunch AND dinner. No exceptions.\n"
+                "- NEVER repeat the same place on different days.\n"
+                "- NEVER place two restaurants back-to-back.\n"
+                "- NEVER place two activities of the same category back-to-back (e.g. two museums in a row, two shops in a row).\n"
+                "- NEVER leave gaps >1h between activities. Fill 09:00 through dinner continuously.\n"
+                "  If last afternoon activity ends at 17:00 and dinner is at 19:30, you MUST add something between (a walk, a bar, a viewpoint, a park).\n"
+                "- Activities must respect opening hours (no museum at 21:00, no bar at 09:00).\n"
+                "- Outdoor activities avoid rainy forecast days.\n"
+                "- ALL trip days must be covered. The trip has days from start_date to end_date INCLUSIVE.\n\n"
+                "== SELF-CHECK (before finalize) ==\n"
+                "Call get_day_schedule for each day. For each day verify:\n"
+                "  1. Has lunch? (one restaurant between 12:00-14:30)\n"
+                "  2. Has dinner? (one restaurant between 19:00-22:00)\n"
+                "  3. No gap >1h between any two consecutive items? (check end_time vs next start_time)\n"
+                "  4. No two consecutive items of the same category?\n"
+                "  5. No repeated places from other days?\n"
+                "  6. All trip days have activities? (start_date to end_date inclusive)\n"
+                "If ANY check fails: FIX IT before calling finalize.\n\n"
+                "== EFFICIENCY ==\n"
+                "- Batch an ENTIRE DAY of place_item calls in one tool_calls array.\n"
+                "- Call list_saved_places ONCE. Remember the data.\n"
+                "- Call get_day_context at most ONCE per day.\n"
+                "- NEVER repeat a tool call that already succeeded.\n"
+                "- Target: complete everything in under 25 steps.\n"
+                "- ALWAYS provide title + lat + lng when calling place_item.\n"
+                "- If a tool errors, adapt and move on. Do not retry endlessly."
             )
         return (
             f"The user said: \"{context.user_message}\". "
@@ -449,7 +512,7 @@ To signal completion:
         offset = len(history) - len(recent)
         for i, entry in enumerate(recent):
             result_str = json.dumps(entry["result"], ensure_ascii=False)
-            max_len = 500 if entry["tool"] == "list_saved_places" else 200
+            max_len = 3000 if entry["tool"] in ("list_saved_places", "get_day_context") else 300
             if len(result_str) > max_len:
                 result_str = result_str[:max_len] + "..."
             status = "OK" if entry.get("success", True) else "FAILED"

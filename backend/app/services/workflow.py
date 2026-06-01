@@ -35,7 +35,7 @@ from app.schemas.trip import (
     WorkflowStateRead,
 )
 from app.services.agent import AgentCoordinator
-from app.services.agent_tools import get_active_itinerary, tool_generate_itinerary, tool_reorder_day
+from app.services.agent_tools import get_active_itinerary, tool_reorder_day
 from app.services.chat import build_chat_response
 from app.services.llm import LLMIntegrationError
 from app.services.planner import build_map_payload
@@ -479,6 +479,8 @@ class WorkflowService:
         return self.build_workspace(db, trip_id)
 
     def rebuild_plan_from_selection(self, db: Session, trip_id: int) -> WorkspaceResponse:
+        from app.services.central_mind import CentralMind
+
         trip = self._load_trip(db, trip_id)
         selected_places = [place for place in trip.places if place.is_selected]
         if not selected_places:
@@ -489,12 +491,9 @@ class WorkflowService:
         db.add(state)
         db.commit()
 
-        itinerary, _ = tool_generate_itinerary(
-            db,
-            trip,
-            run=None,
-            rationale="Rebuilt itinerary using the user-selected places.",
-        )
+        mind = CentralMind(self.user)
+        mind.plan_trip(db, trip, run, self._log_step)
+
         trip = self._load_trip(db, trip.id)
         active = get_active_itinerary(trip)
         self._replace_artifact(
@@ -510,8 +509,6 @@ class WorkflowService:
             },
             run=run,
         )
-# Decision request removed
-        # self._replace_decision(...)
         self._log_step(
             db,
             run,
@@ -519,7 +516,7 @@ class WorkflowService:
             "completed",
             "Roteiro reconstruido com base na selecao manual de lugares.",
             {"selected_place_count": len(selected_places)},
-            {"itinerary_id": itinerary.id},
+            {"itinerary_id": active.id if active else None},
         )
         state.current_stage = "await_plan_approval"
         db.add(state)

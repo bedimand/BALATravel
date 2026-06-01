@@ -35,12 +35,6 @@ def auth_headers(client: TestClient) -> dict[str, str]:
 
 @pytest.fixture(autouse=True)
 def stub_non_search_external_services(monkeypatch):
-    def fake_summarize_itinerary(*_args, **_kwargs) -> str:
-        return "Resumo do roteiro gerado para testes."
-
-    def fake_summarize_recommendations(*_args, **_kwargs) -> str:
-        return "Sugestoes consolidadas para testes."
-
     def fake_llm_chat(*_args, **_kwargs) -> str:
         return (
             '{"assistant_message":"Sugestao valida para testes.",'
@@ -73,20 +67,36 @@ def stub_non_search_external_services(monkeypatch):
         db.commit()
         return snapshots
 
+    _central_mind_step = {"n": 0}
+
     def fake_central_mind_llm_chat(prompt, **kwargs):
         """Returns agent tool-call JSON for the CentralMind loop."""
         import json as _json
         prompt_text = _json.dumps(prompt) if isinstance(prompt, list) else prompt
+        _central_mind_step["n"] += 1
 
         if "Places saved: 0" in prompt_text:
             return _json.dumps({
                 "reasoning": "Search for places.",
                 "tool_calls": [{"name": "search_places_general", "params": {}}],
             })
-        if "Active itinerary: None" in prompt_text:
+        if "Active itinerary: None" in prompt_text and "start_itinerary" not in prompt_text:
             return _json.dumps({
-                "reasoning": "Generate itinerary.",
-                "tool_calls": [{"name": "generate_itinerary", "params": {"rationale": "Initial plan"}}],
+                "reasoning": "Start itinerary and place items.",
+                "tool_calls": [{"name": "start_itinerary", "params": {}}],
+            })
+        if "start_itinerary" in prompt_text and "item_count" not in prompt_text:
+            return _json.dumps({
+                "reasoning": "Place activities for the trip.",
+                "tool_calls": [
+                    {"name": "place_item", "params": {"title": "Cristo Redentor", "item_type": "tourist_attraction", "date": "2025-01-15", "start_time": "09:00", "end_time": "11:00", "lat": -22.9519, "lng": -43.2105}},
+                    {"name": "place_item", "params": {"title": "Copacabana", "item_type": "beach", "date": "2025-01-15", "start_time": "14:00", "end_time": "17:00", "lat": -22.9711, "lng": -43.1822}},
+                ],
+            })
+        if "finalize_itinerary" not in prompt_text and "item_count" not in prompt_text and "Active itinerary: " in prompt_text:
+            return _json.dumps({
+                "reasoning": "Finalize the itinerary.",
+                "tool_calls": [{"name": "finalize_itinerary", "params": {"summary": "Roteiro de teste."}}],
             })
         return _json.dumps({
             "reasoning": "Done.",
@@ -112,11 +122,8 @@ def stub_non_search_external_services(monkeypatch):
              "fetched_at": now, "summary": "Praia famosa.", "deeplink": "https://osm.org/"},
         ]
 
-    monkeypatch.setattr("app.services.planner.summarize_itinerary", fake_summarize_itinerary)
-    monkeypatch.setattr("app.services.agent_tools.summarize_recommendations", fake_summarize_recommendations)
     monkeypatch.setattr("app.services.chat.llm_chat", fake_llm_chat)
     monkeypatch.setattr("app.services.central_mind.llm_chat", fake_central_mind_llm_chat)
-    monkeypatch.setattr("app.services.planner.estimate_route", fake_estimate_route)
     monkeypatch.setattr("app.services.routing.estimate_route", fake_estimate_route)
     monkeypatch.setattr("app.services.weather.refresh_trip_weather", fake_refresh_trip_weather)
     monkeypatch.setattr("app.services.providers.TravelProvider.search_places", fake_provider_search_places)

@@ -118,23 +118,6 @@ class ToolRegistry:
         )
 
     def _register_intelligence_tools(self) -> None:
-        self._tools["score_places_for_traveler"] = ToolDefinition(
-            name="score_places_for_traveler",
-            description=(
-                "Use AI to score and rank all currently saved places against the traveler profile "
-                "(interests, pace, dietary, mobility). Returns a ranked list with scores. "
-                "Call after gathering places to identify the best matches."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-            handler=_handle_score_places,
-            category="intelligence",
-            cost_estimate="medium",
-        )
-
         self._tools["get_weather_forecast"] = ToolDefinition(
             name="get_weather_forecast",
             description=(
@@ -209,43 +192,6 @@ class ToolRegistry:
         )
 
     def _register_itinerary_tools(self) -> None:
-        self._tools["generate_itinerary"] = ToolDefinition(
-            name="generate_itinerary",
-            description=(
-                "Generate a complete day-by-day itinerary from the currently saved places. "
-                "Requires at least some places to be saved first. Creates timed activities "
-                "with travel estimates between them."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "rationale": {"type": "string", "description": "Why you're generating this itinerary"},
-                },
-                "required": [],
-            },
-            handler=_handle_generate_itinerary,
-            category="itinerary",
-            cost_estimate="high",
-        )
-
-        self._tools["replan_itinerary"] = ToolDefinition(
-            name="replan_itinerary",
-            description=(
-                "Regenerate the itinerary from scratch using current places and context. "
-                "Use when a global change is needed rather than a local edit."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "rationale": {"type": "string", "description": "Why you're replanning"},
-                },
-                "required": [],
-            },
-            handler=_handle_replan_itinerary,
-            category="itinerary",
-            cost_estimate="high",
-        )
-
         self._tools["reorder_day"] = ToolDefinition(
             name="reorder_day",
             description=(
@@ -437,6 +383,25 @@ class ToolRegistry:
             cost_estimate="low",
         )
 
+        self._tools["get_day_context"] = ToolDefinition(
+            name="get_day_context",
+            description=(
+                "Get full context for planning a specific day: weather, items already placed, "
+                "starting coordinates, and remaining unplaced places sorted by distance. "
+                "Call this before scheduling each day to make informed decisions."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "ISO date YYYY-MM-DD to plan for"},
+                },
+                "required": ["date"],
+            },
+            handler=_handle_get_day_context,
+            category="scheduling",
+            cost_estimate="low",
+        )
+
         self._tools["finalize_itinerary"] = ToolDefinition(
             name="finalize_itinerary",
             description=(
@@ -560,23 +525,6 @@ def _handle_search_places_general(
     return {"count": len(rows), "top_place": rows[0].name if rows else None}
 
 
-def _handle_score_places(
-    db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
-) -> dict[str, Any]:
-    places = list(db.scalars(select(Place).where(Place.trip_id == trip.id).order_by(Place.rating.desc())))
-    n_days = max((trip.end_date - trip.start_date).days, 1)
-    target_selected = min(len(places), n_days * 6)
-    for i, place in enumerate(places):
-        place.is_selected = i < target_selected
-        db.add(place)
-    db.commit()
-    return {
-        "total_places": len(places),
-        "selected": target_selected,
-        "top_5": [{"name": p.name, "rating": p.rating, "category": p.category} for p in places[:5]],
-    }
-
-
 def _handle_get_weather(
     db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
 ) -> dict[str, Any]:
@@ -626,6 +574,14 @@ def _handle_enrich_place(
     }
 
 
+def _format_opening_hours(hours_json: dict[str, Any]) -> dict[str, str]:
+    result = {}
+    for day, windows in hours_json.items():
+        if windows:
+            result[day] = ", ".join(windows) if isinstance(windows, list) else str(windows)
+    return result
+
+
 def _handle_list_places(
     db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
 ) -> dict[str, Any]:
@@ -642,41 +598,16 @@ def _handle_list_places(
                 "is_selected": p.is_selected,
                 "lat": p.lat,
                 "lng": p.lng,
+                "opening_hours": _format_opening_hours(p.opening_hours_json) if p.opening_hours_json else None,
+                "neighborhood": p.neighborhood,
+                "price_level": p.price_level,
+                "summary": (p.summary[:80] + "...") if p.summary and len(p.summary) > 80 else p.summary,
             }
             for p in places[:30]
         ],
     }
 
 
-def _handle_generate_itinerary(
-    db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
-) -> dict[str, Any]:
-    from app.services.agent_tools import tool_generate_itinerary
-
-    rationale = params.get("rationale", "Generated by central mind agent.")
-    agent_run = run if isinstance(run, AgentRun) else None
-    itinerary, mutation = tool_generate_itinerary(db, trip, run=agent_run, rationale=rationale)
-    return {
-        "itinerary_id": itinerary.id,
-        "version": itinerary.version,
-        "item_count": len(itinerary.items),
-        "total_cost": str(itinerary.total_estimated_cost),
-    }
-
-
-def _handle_replan_itinerary(
-    db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
-) -> dict[str, Any]:
-    from app.services.agent_tools import tool_replan_itinerary
-
-    rationale = params.get("rationale", "Replanned by central mind agent.")
-    agent_run = run if isinstance(run, AgentRun) else None
-    itinerary, mutation = tool_replan_itinerary(db, trip, run=agent_run, rationale=rationale)
-    return {
-        "itinerary_id": itinerary.id,
-        "version": itinerary.version,
-        "item_count": len(itinerary.items),
-    }
 
 
 def _handle_reorder_day(
@@ -956,6 +887,111 @@ def _handle_get_day_schedule(
     }
 
 
+def _handle_get_day_context(
+    db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
+) -> dict[str, Any]:
+    import math
+    from datetime import date as date_type
+    from app.models.entities import TripWeatherSnapshot
+    from app.services.agent_tools import get_active_itinerary
+
+    date_str = params.get("date", "")
+    try:
+        parts = date_str.split("-")
+        target_date = date_type(int(parts[0]), int(parts[1]), int(parts[2]))
+    except (ValueError, IndexError):
+        return {"error": f"Invalid date format: {date_str}. Use YYYY-MM-DD."}
+
+    weather_snap = db.scalar(
+        select(TripWeatherSnapshot).where(
+            TripWeatherSnapshot.trip_id == trip.id,
+            TripWeatherSnapshot.forecast_date == target_date,
+        )
+    )
+    weather = None
+    if weather_snap:
+        weather = {
+            "condition": weather_snap.condition_label,
+            "outdoor_risky": weather_snap.is_outdoor_risky,
+        }
+
+    active = get_active_itinerary(trip)
+    placed_items = []
+    if active:
+        day_items = sorted(
+            [i for i in active.items if i.date == target_date],
+            key=lambda x: x.start_time,
+        )
+        placed_items = [
+            {"id": i.id, "title": i.title, "start": i.start_time.strftime("%H:%M"), "end": i.end_time.strftime("%H:%M"), "lat": i.lat, "lng": i.lng}
+            for i in day_items
+        ]
+
+    anchor_lat = trip.accommodation_lat
+    anchor_lng = trip.accommodation_lng
+    if placed_items:
+        last = placed_items[-1]
+        if last["lat"] and last["lng"]:
+            anchor_lat = last["lat"]
+            anchor_lng = last["lng"]
+
+    all_places = list(db.scalars(select(Place).where(Place.trip_id == trip.id).order_by(Place.rating.desc())))
+    placed_refs = set()
+    if active:
+        placed_refs = {i.place_ref for i in active.items if i.place_ref}
+
+    remaining = []
+    for p in all_places:
+        if p.external_id in placed_refs:
+            continue
+        dist_km = None
+        if anchor_lat and anchor_lng:
+            dlat = math.radians(p.lat - anchor_lat)
+            dlng = math.radians(p.lng - anchor_lng)
+            a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(anchor_lat)) * math.cos(math.radians(p.lat)) * math.sin(dlng / 2) ** 2
+            dist_km = round(6371 * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)), 1)
+        remaining.append({
+            "id": p.id,
+            "name": p.name,
+            "category": p.category,
+            "rating": p.rating,
+            "dist_km_from_anchor": dist_km,
+            "opening_hours": _format_opening_hours(p.opening_hours_json) if p.opening_hours_json else None,
+        })
+
+    remaining.sort(key=lambda x: x["dist_km_from_anchor"] if x["dist_km_from_anchor"] is not None else 999)
+
+    return {
+        "date": date_str,
+        "weather": weather,
+        "accommodation": {"lat": trip.accommodation_lat, "lng": trip.accommodation_lng, "name": trip.accommodation_name},
+        "anchor_point": {"lat": anchor_lat, "lng": anchor_lng},
+        "placed_items": placed_items,
+        "remaining_places": remaining[:20],
+        "total_remaining": len(remaining),
+    }
+
+
+def _validate_itinerary(trip: Trip, active) -> tuple[list[str], list[str]]:
+    from collections import defaultdict
+    from datetime import date as date_type
+
+    warnings = []
+    errors = []
+
+    trip_days = max((trip.end_date - trip.start_date).days + 1, 1)
+    items_by_day: dict[date_type, list] = defaultdict(list)
+    for item in active.items:
+        items_by_day[item.date].append(item)
+
+    covered_days = len(items_by_day)
+    if covered_days < trip_days:
+        missing = trip_days - covered_days
+        errors.append(f"{missing} trip day(s) have no activities scheduled.")
+
+    return warnings, errors
+
+
 def _handle_finalize_itinerary(
     db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
 ) -> dict[str, Any]:
@@ -970,16 +1006,24 @@ def _handle_finalize_itinerary(
     if not active.items:
         return {"error": "Itinerary has no items. Place items before finalizing."}
 
+    validation_warnings, validation_errors = _validate_itinerary(trip, active)
+    if validation_errors:
+        return {
+            "error": "Cannot finalize — critical issues found. Fix them first.",
+            "issues": validation_errors + validation_warnings,
+        }
+
     n_days = len(set(item.date for item in active.items))
     active.total_estimated_cost = trip.budget / max(len(active.items), 1)
 
     summary = params.get("summary")
     if not summary:
         try:
-            summary = summarize_itinerary(trip, n_days, [])
+            summary = summarize_itinerary(trip, n_days, validation_warnings)
         except LLMIntegrationError:
             summary = f"Roteiro de {n_days} dias em {trip.destination} com {len(active.items)} atividades."
     active.assistant_summary = summary
+    active.warnings = validation_warnings
 
     agent_run = run if isinstance(run, AgentRun) else None
     mutation = PlanMutation(
