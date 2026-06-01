@@ -69,17 +69,72 @@ The LLM agent has access to 20 tools:
 | `check_route` | Check travel time before committing |
 | `finish` | Signal completion |
 
-## Quick Start
+## Running the Project
 
-### Backend
+### Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- API keys (see Environment section below)
+
+### 1. Clone and set up the backend
 
 ```bash
 cd backend
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+# or: .venv\Scripts\activate  # Windows
+
+# Install dependencies
 pip install -e .[dev]
+```
+
+### 2. Configure environment
+
+Create `backend/.env`:
+
+```env
+# LLM (required — any OpenAI-compatible endpoint)
+OPENAI_BASE_URL=https://your-llm-endpoint/openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+
+# Place search (required for trip planning)
+SERPAPI_API_KEY=...          # Google Maps place search via SerpApi
+
+# Routing (required for travel time calculation)
+GOOGLE_ROUTES_API_KEY=...
+
+# Optional — enriches results but not strictly required
+OPENTRIPMAP_API_KEY=...     # Place enrichment (ratings, summaries)
+OPENWEATHER_API_KEY=...     # Weather forecasts for scheduling
+
+# Optional: OpenRouter as alternative/fallback LLM
+OPENROUTER_API_KEY=...
+OPENROUTER_MODEL=...
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+```
+
+Create `frontend/.env.local`:
+
+```env
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000/api
+```
+
+### 3. Start the backend
+
+```bash
+cd backend
 uvicorn app.main:app --reload
 ```
 
-### Frontend
+The API will be available at `http://127.0.0.1:8000`. Docs at `http://127.0.0.1:8000/docs`.
+
+The database (SQLite) is created automatically on first run.
+
+### 4. Start the frontend
 
 ```bash
 cd frontend
@@ -87,28 +142,21 @@ npm install
 npm run dev
 ```
 
-### Environment
+The app will be available at `http://localhost:3000`.
 
-Copy `backend/.env` and configure:
+### 5. Create a trip
 
-```env
-# LLM (OpenAI-compatible endpoint)
-OPENAI_BASE_URL=https://your-llm-endpoint/openai
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+1. Sign up at `http://localhost:3000/signup`
+2. Create a new trip at `http://localhost:3000/trips/new`
+3. The agent will autonomously search for places and build your itinerary
+4. Use the chat to make edits ("move dinner earlier", "add a beach day", etc.)
 
-# Search providers
-SERPAPI_API_KEY=...          # Google Maps place search
-OPENTRIPMAP_API_KEY=...     # Place enrichment
-GOOGLE_ROUTES_API_KEY=...   # Travel time calculation
-OPENWEATHER_API_KEY=...     # Weather forecasts
+### Running tests
 
-# Optional: OpenRouter as fallback LLM
-OPENROUTER_API_KEY=...
-OPENROUTER_MODEL=...
+```bash
+cd backend
+pytest tests/ -v
 ```
-
-Frontend: set `NEXT_PUBLIC_API_URL=http://127.0.0.1:8000/api` in `frontend/.env.local`.
 
 ## API Endpoints
 
