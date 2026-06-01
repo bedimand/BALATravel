@@ -33,13 +33,16 @@ def _weather_condition_label(code: int, description: str | None) -> str:
 
 
 def refresh_trip_weather(db: Session, trip: Trip, places: list[Place] | None = None) -> list[TripWeatherSnapshot]:
-    target_place = (places or [])[:1]
-    lat = target_place[0].lat if target_place else None
-    lng = target_place[0].lng if target_place else None
+    lat = trip.accommodation_lat
+    lng = trip.accommodation_lng
+    if lat is None or lng is None:
+        target_place = (places or [])[:1]
+        lat = target_place[0].lat if target_place else None
+        lng = target_place[0].lng if target_place else None
     if not settings.openweather_api_key:
         raise WeatherIntegrationError("OPENWEATHER_API_KEY is missing.")
     if lat is None or lng is None:
-        raise WeatherIntegrationError("Cannot fetch weather without place coordinates.")
+        raise WeatherIntegrationError("Cannot fetch weather without coordinates.")
 
     db.execute(delete(TripWeatherSnapshot).where(TripWeatherSnapshot.trip_id == trip.id))
     db.flush()
@@ -61,7 +64,7 @@ def refresh_trip_weather(db: Session, trip: Trip, places: list[Place] | None = N
         grouped: dict[date, list[dict]] = {}
         for row in payload.get("list", []):
             forecast_date = datetime.fromtimestamp(int(row.get("dt", 0)), tz=UTC).date()
-            if forecast_date < trip.start_date or forecast_date >= trip.end_date:
+            if forecast_date < trip.start_date or forecast_date > trip.end_date:
                 continue
             grouped.setdefault(forecast_date, []).append(row)
 

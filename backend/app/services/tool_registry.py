@@ -534,14 +534,27 @@ def _handle_get_weather(
     try:
         snapshots = refresh_trip_weather(db, trip, places)
         return {
+            "source": "openweather_api",
             "days_forecasted": len(snapshots),
             "summary": [
-                {"date": s.forecast_date.isoformat(), "condition": s.condition_label, "risky": s.is_outdoor_risky}
+                {"date": s.forecast_date.isoformat(), "condition": s.condition_label, "temp_min": s.temp_min_c, "temp_max": s.temp_max_c, "rain_probability": s.rain_probability, "outdoor_risky": s.is_outdoor_risky}
                 for s in snapshots[:7]
             ],
         }
-    except WeatherIntegrationError as exc:
-        return {"error": str(exc)}
+    except WeatherIntegrationError:
+        month = trip.start_date.strftime("%B")
+        return {
+            "source": "unavailable",
+            "fallback_instruction": (
+                f"Weather API cannot provide forecast for these dates. "
+                f"Use your knowledge of typical weather in {trip.destination} during {month}. "
+                f"Consider: is it rainy season? Hot or cold? Windy? "
+                f"Schedule outdoor activities on days you estimate will be safe, "
+                f"and avoid outdoor-heavy days if the region typically has rain in {month}."
+            ),
+            "destination": trip.destination,
+            "month": month,
+        }
 
 
 def _handle_estimate_route(
