@@ -8,7 +8,6 @@ import type {
   MapResponse,
   Place,
   ProposedChange,
-  SearchResponse,
   TodaySummary,
   Trip,
   UserProfile,
@@ -54,7 +53,6 @@ export const api = {
   getTripPlaces: (tripId: string | number) => request<Place[]>(`/trips/${tripId}/places`),
   updatePlaceSelection: (tripId: string | number, placeId: string | number, body: { is_selected: boolean }) =>
     request<WorkspaceResponse>(`/trips/${tripId}/places/${placeId}`, { method: "PATCH", body }),
-  searchTrip: (tripId: string | number) => request<SearchResponse>(`/trips/${tripId}/search`, { method: "POST" }),
   generateItinerary: (tripId: string | number) =>
     request<BackgroundRunResponse>(`/trips/${tripId}/itinerary/generate`, { method: "POST" }),
   replanItinerary: (tripId: string | number) =>

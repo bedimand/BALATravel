@@ -80,12 +80,13 @@ class ToolRegistry:
         self._register_control_tools()
 
     def _register_search_tools(self) -> None:
-        self._tools["search_places_by_interest"] = ToolDefinition(
-            name="search_places_by_interest",
+        self._tools["search_places"] = ToolDefinition(
+            name="search_places",
             description=(
                 "Search Google Maps for places matching a query string. Use descriptive, "
                 "human-friendly queries (e.g., 'best museums in Paris', 'nightlife bars cocktails'). "
-                "You can call this multiple times with different queries to build a diverse pool."
+                "Call this multiple times with different queries to build a diverse pool — "
+                "results accumulate (new places are added, existing ones kept)."
             ),
             parameters={
                 "type": "object",
@@ -97,26 +98,9 @@ class ToolRegistry:
                 },
                 "required": ["query"],
             },
-            handler=_handle_search_places_by_interest,
+            handler=_handle_search_places,
             category="search",
             cost_estimate="medium",
-        )
-
-        self._tools["search_places_general"] = ToolDefinition(
-            name="search_places_general",
-            description=(
-                "Search for places using Nominatim + OpenTripMap enrichment. "
-                "Good for broad discovery when you want a general overview of a destination's attractions. "
-                "Returns up to 24 places with ratings, summaries, and coordinates."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-            handler=_handle_search_places_general,
-            category="search",
-            cost_estimate="high",
         )
 
     def _register_intelligence_tools(self) -> None:
@@ -158,25 +142,6 @@ class ToolRegistry:
         )
 
     def _register_place_tools(self) -> None:
-        self._tools["enrich_place_details"] = ToolDefinition(
-            name="enrich_place_details",
-            description=(
-                "Retrieve photos and extra details for a specific place by its Google Place ID. "
-                "Call for top candidates only to avoid API waste."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "google_place_id": {"type": "string", "description": "The Google Place ID"},
-                    "place_name": {"type": "string", "description": "Human-friendly name for logging"},
-                },
-                "required": ["google_place_id"],
-            },
-            handler=_handle_enrich_place,
-            category="place_management",
-            cost_estimate="low",
-        )
-
         self._tools["list_saved_places"] = ToolDefinition(
             name="list_saved_places",
             description=(
@@ -194,21 +159,43 @@ class ToolRegistry:
         )
 
     def _register_itinerary_tools(self) -> None:
-        self._tools["reorder_day"] = ToolDefinition(
-            name="reorder_day",
+        self._tools["set_day"] = ToolDefinition(
+            name="set_day",
             description=(
-                "Reorder activities for a specific day to optimize travel time. "
-                "Redistributes time slots based on proximity."
+                "Replace an entire day's schedule with the exact plan YOU decide. "
+                "You choose the order, the times, and which activities to keep, move, add, or drop "
+                "— this tool does not reorder or reschedule anything for you. Pass the full ordered "
+                "list of items for that day. Times must not overlap. Use this for any 'reorganize the day', "
+                "'make the afternoon lighter', 'start later', or 'swap activities' request. "
+                "The tool recomputes travel time between consecutive stops automatically."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "date": {"type": "string", "description": "ISO date (YYYY-MM-DD) of the day to reorder"},
-                    "rationale": {"type": "string", "description": "Why reordering this day"},
+                    "date": {"type": "string", "description": "ISO date (YYYY-MM-DD) of the day to set"},
+                    "items": {
+                        "type": "array",
+                        "description": "The complete ordered list of activities for this day.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "start_time": {"type": "string", "description": "HH:MM"},
+                                "end_time": {"type": "string", "description": "HH:MM"},
+                                "item_type": {"type": "string", "description": "E.g. 'restaurant', 'museum', 'attraction'"},
+                                "lat": {"type": "number"},
+                                "lng": {"type": "number"},
+                                "notes": {"type": "string"},
+                                "place_ref": {"type": "string"},
+                            },
+                            "required": ["title", "start_time", "end_time"],
+                        },
+                    },
+                    "rationale": {"type": "string", "description": "Why you're setting the day this way"},
                 },
-                "required": ["date"],
+                "required": ["date", "items"],
             },
-            handler=_handle_reorder_day,
+            handler=_handle_set_day,
             category="itinerary",
             cost_estimate="medium",
         )
@@ -321,7 +308,8 @@ class ToolRegistry:
             description=(
                 "Place an activity at a specific date and time in the current itinerary. "
                 "Use place_id to reference a saved place, OR provide title+lat+lng for custom items. "
-                "Automatically calculates travel time from the previous item on the same day. "
+                "Travel time is computed from the origin you give in from_lat/from_lng; if you omit it, "
+                "it defaults to the previous item that day, else the accommodation. "
                 "Validates no time conflicts."
             ),
             parameters={
@@ -335,6 +323,8 @@ class ToolRegistry:
                     "end_time": {"type": "string", "description": "HH:MM (24h format)"},
                     "lat": {"type": "number", "description": "Latitude (used if no place_id)"},
                     "lng": {"type": "number", "description": "Longitude (used if no place_id)"},
+                    "from_lat": {"type": "number", "description": "Optional: latitude to measure travel time from (you decide the origin)"},
+                    "from_lng": {"type": "number", "description": "Optional: longitude to measure travel time from"},
                     "notes": {"type": "string", "description": "Optional notes or reasoning"},
                 },
                 "required": ["date", "start_time", "end_time"],
@@ -441,7 +431,7 @@ class ToolRegistry:
 
         self._tools["list_current_options"] = ToolDefinition(
             name="list_current_options",
-            description="Get a count summary of available flights, hotels, and places.",
+            description="Get a count summary of the places available for this trip.",
             parameters={
                 "type": "object",
                 "properties": {},
@@ -476,7 +466,7 @@ class ToolRegistry:
 # --- Tool handler implementations ---
 
 
-def _handle_search_places_by_interest(
+def _handle_search_places(
     db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
 ) -> dict[str, Any]:
     from app.services.providers import get_travel_provider
@@ -512,19 +502,6 @@ def _handle_search_places_by_interest(
         "query": query,
         "top_results": [{"name": r["name"], "rating": r.get("rating", 0)} for r in results[:5]],
     }
-
-
-def _handle_search_places_general(
-    db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
-) -> dict[str, Any]:
-    from app.services.agent_tools import _replace_places
-
-    from app.services.providers import get_travel_provider
-
-    provider = get_travel_provider()
-    payloads = provider.search_places(trip)
-    rows = _replace_places(db, trip, payloads)
-    return {"count": len(rows), "top_place": rows[0].name if rows else None}
 
 
 def _handle_get_weather(
@@ -573,22 +550,6 @@ def _handle_estimate_route(
         return {"error": str(exc)}
 
 
-def _handle_enrich_place(
-    db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
-) -> dict[str, Any]:
-    from app.services.providers import get_travel_provider
-
-    provider = get_travel_provider()
-    place_id = params.get("google_place_id", "")
-    place_name = params.get("place_name", "unknown")
-    photos = provider.get_place_photos(place_id)
-    return {
-        "place_name": place_name,
-        "photos_count": len(photos),
-        "photos": photos[:5],
-    }
-
-
 def _format_opening_hours(hours_json: dict[str, Any]) -> dict[str, str]:
     result = {}
     for day, windows in hours_json.items():
@@ -625,16 +586,21 @@ def _handle_list_places(
 
 
 
-def _handle_reorder_day(
+def _handle_set_day(
     db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
 ) -> dict[str, Any]:
-    from app.services.agent_tools import tool_reorder_day
+    from app.services.agent_tools import tool_set_day
 
     date_text = params.get("date", "")
-    rationale = params.get("rationale", "Day reordered by central mind agent.")
+    items = params.get("items", [])
+    rationale = params.get("rationale", "Day set by central mind agent.")
     agent_run = run if isinstance(run, AgentRun) else None
-    itinerary, mutation = tool_reorder_day(db, trip, date_text, rationale, run=agent_run)
-    return {"itinerary_id": itinerary.id, "date": date_text}
+    itinerary, mutation = tool_set_day(db, trip, date_text, items, rationale, run=agent_run)
+    return {
+        "itinerary_id": itinerary.id,
+        "date": date_text,
+        "item_count": len(mutation.changed_item_ids),
+    }
 
 
 def _handle_update_item(
@@ -790,22 +756,24 @@ def _handle_place_item(
     travel_time_min = 0
     travel_distance_km = 0.0
     if lat and lng:
-        day_items = sorted(
-            [i for i in active.items if i.date == item_date],
-            key=lambda x: x.start_time,
-        )
-        if day_items:
-            prev = day_items[-1]
-            if prev.lat and prev.lng:
-                try:
-                    route = estimate_route(db, trip, (prev.lat, prev.lng), (lat, lng))
-                    travel_time_min = route.duration_min
-                    travel_distance_km = route.distance_km
-                except RoutingIntegrationError:
-                    pass
-        elif trip.accommodation_lat and trip.accommodation_lng:
+        # Origin priority: (1) what the agent explicitly passes via from_lat/from_lng,
+        # (2) the last item already placed that day, (3) the accommodation. The agent
+        # owns the choice; the fallback only kicks in when it stays silent.
+        origin: tuple[float, float] | None = None
+        if params.get("from_lat") is not None and params.get("from_lng") is not None:
+            origin = (params["from_lat"], params["from_lng"])
+        else:
+            day_items = sorted(
+                [i for i in active.items if i.date == item_date],
+                key=lambda x: x.start_time,
+            )
+            if day_items and day_items[-1].lat and day_items[-1].lng:
+                origin = (day_items[-1].lat, day_items[-1].lng)
+            elif trip.accommodation_lat and trip.accommodation_lng:
+                origin = (trip.accommodation_lat, trip.accommodation_lng)
+        if origin:
             try:
-                route = estimate_route(db, trip, (trip.accommodation_lat, trip.accommodation_lng), (lat, lng))
+                route = estimate_route(db, trip, origin, (lat, lng))
                 travel_time_min = route.duration_min
                 travel_distance_km = route.distance_km
             except RoutingIntegrationError:
@@ -974,6 +942,9 @@ def _handle_get_day_context(
             "opening_hours": _format_opening_hours(p.opening_hours_json) if p.opening_hours_json else None,
         })
 
+    # Sort by proximity as a convenience, but DO NOT truncate — the agent sees
+    # every remaining place (with distance as data) and decides what to use.
+    # Truncating here would silently hide good options that happen to be farther.
     remaining.sort(key=lambda x: x["dist_km_from_anchor"] if x["dist_km_from_anchor"] is not None else 999)
 
     return {
@@ -982,7 +953,7 @@ def _handle_get_day_context(
         "accommodation": {"lat": trip.accommodation_lat, "lng": trip.accommodation_lng, "name": trip.accommodation_name},
         "anchor_point": {"lat": anchor_lat, "lng": anchor_lng},
         "placed_items": placed_items,
-        "remaining_places": remaining[:20],
+        "remaining_places": remaining,
         "total_remaining": len(remaining),
     }
 
@@ -1002,7 +973,10 @@ def _validate_itinerary(trip: Trip, active) -> tuple[list[str], list[str]]:
     covered_days = len(items_by_day)
     if covered_days < trip_days:
         missing = trip_days - covered_days
-        errors.append(f"{missing} trip day(s) have no activities scheduled.")
+        # Surfaced as a warning, NOT an error: the agent decides whether an
+        # empty day is acceptable (e.g. the user asked to plan only some days,
+        # or wants a free day). We don't block finalize on a product rule.
+        warnings.append(f"{missing} trip day(s) have no activities scheduled.")
 
     return warnings, errors
 

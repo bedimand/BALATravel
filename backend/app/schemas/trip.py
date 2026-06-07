@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field, field_validator
 
 class TripCreate(BaseModel):
     destination: str = Field(min_length=2, max_length=120)
-    origin_city: str | None = Field(default=None, min_length=2, max_length=120)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     locale: str | None = Field(default=None, min_length=2, max_length=10)
     start_date: dt_date
@@ -41,14 +40,6 @@ class TripCreate(BaseModel):
         text = str(value).strip().upper()
         return text or None
 
-    @field_validator("origin_city", mode="before")
-    @classmethod
-    def normalize_origin_city(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text or None
-
     @field_validator("locale", mode="before")
     @classmethod
     def normalize_locale(cls, value: str | None) -> str | None:
@@ -60,9 +51,6 @@ class TripCreate(BaseModel):
 
 class TripUpdate(BaseModel):
     destination: str | None = Field(default=None, min_length=2, max_length=120)
-    origin_city: str | None = Field(default=None, min_length=2, max_length=120)
-    selected_flight_id: int | None = None
-    selected_hotel_id: int | None = None
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     locale: str | None = Field(default=None, min_length=2, max_length=10)
     start_date: dt_date | None = None
@@ -83,14 +71,6 @@ class TripUpdate(BaseModel):
         text = str(value).strip().upper()
         return text or None
 
-    @field_validator("origin_city", mode="before")
-    @classmethod
-    def normalize_update_origin_city(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text or None
-
     @field_validator("locale", mode="before")
     @classmethod
     def normalize_update_locale(cls, value: str | None) -> str | None:
@@ -98,38 +78,6 @@ class TripUpdate(BaseModel):
             return None
         text = str(value).strip()
         return text or None
-
-
-class FlightOptionRead(BaseModel):
-    id: int
-    provider_ref: str
-    price: Decimal
-    currency: str
-    legs_json: list[dict[str, Any]]
-    baggage_summary: str
-    deeplink: str
-    source: str
-    confidence: float
-    fetched_at: dt_datetime
-
-    model_config = {"from_attributes": True}
-
-
-class HotelOptionRead(BaseModel):
-    id: int
-    provider_ref: str
-    name: str
-    nightly_price: Decimal
-    total_price: Decimal
-    rating: float
-    lat: float
-    lng: float
-    deeplink: str
-    source: str
-    confidence: float
-    fetched_at: dt_datetime
-
-    model_config = {"from_attributes": True}
 
 
 class PlaceRead(BaseModel):
@@ -197,9 +145,6 @@ class ItineraryVersionRead(BaseModel):
 class TripRead(BaseModel):
     id: int
     destination: str
-    origin_city: str | None = None
-    selected_flight_id: int | None = None
-    selected_hotel_id: int | None = None
     currency: str
     locale: str
     start_date: dt_date
@@ -222,20 +167,9 @@ class TripRead(BaseModel):
     has_car: bool = False
     daily_start_time: dt_time = dt_time(9, 0)
     daily_end_time: dt_time = dt_time(22, 0)
-    flights: list[FlightOptionRead] = Field(default_factory=list)
-    hotels: list[HotelOptionRead] = Field(default_factory=list)
     itinerary_versions: list[ItineraryVersionRead] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
-
-
-class SearchResponse(BaseModel):
-    trip_id: int
-    destination: str
-    flights: list[FlightOptionRead]
-    hotels: list[HotelOptionRead]
-    places: list[PlaceRead]
-    warnings: list[str] = Field(default_factory=list)
 
 
 class ItineraryResponse(BaseModel):
@@ -332,7 +266,6 @@ class PublicTripResponse(BaseModel):
     start_date: dt_date
     end_date: dt_date
     itinerary: ItineraryVersionRead | None = None
-    hotels: list[HotelOptionRead] = Field(default_factory=list)
 
 
 class AgentMessageRequest(BaseModel):

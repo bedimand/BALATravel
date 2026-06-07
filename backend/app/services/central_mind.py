@@ -104,6 +104,15 @@ class CentralMind:
         self._run_loop(db, context, log_step_fn)
         print(f"[MIND] Planning complete. Steps taken: {context.budget.current_step}")
 
+        # Persist agent warnings onto the run so callers can surface them, mirroring
+        # handle_message. Without this, autonomous-run warnings are silently dropped.
+        # plan_trip is called with either an AgentRun (has `warnings`) or a
+        # WorkflowRun (does not) — only persist when the column exists.
+        if context.warnings and hasattr(run, "warnings"):
+            run.warnings = [*(run.warnings or []), *context.warnings]
+            db.add(run)
+            db.commit()
+
     def handle_message(self, db: Session, trip_id: int, message: str) -> MindResult:
         trip = self._load_trip(db, trip_id)
         max_steps = getattr(settings, "agent_max_steps_reactive", 30)
@@ -188,24 +197,18 @@ class CentralMind:
                 params = tc.get("params", {})
 
                 if tool_name == "finish":
-                    if not context.history and context.mode == "reactive":
-                        context.history.append({
-                            "tool": "finish_rejected",
-                            "params": {},
-                            "result": {"error": "You must use tools to make changes before finishing. Do NOT claim work is done without calling the appropriate tool."},
-                            "success": False,
-                        })
-                        break
-                    if context.mode == "autonomous" and not self._has_finalized_itinerary(context):
-                        context.history.append({
-                            "tool": "finish_rejected",
-                            "params": {},
-                            "result": {"error": "You CANNOT finish without completing the itinerary. You must: place_item for each day, then call finalize_itinerary BEFORE calling finish."},
-                            "success": False,
-                        })
+                    # The agent owns the decision to stop. We trust it: guidance on
+                    # when to finalize lives in the system prompt, and the step budget
+                    # already bounds the loop. We don't BLOCK the finish, but if an
+                    # autonomous run finishes without a finalized itinerary we surface
+                    # a non-fatal warning instead of silently shipping an empty plan.
+                    if context.mode == "autonomous" and not self._finalized_itinerary(context):
+                        context.warnings.append(
+                            "O agente finalizou sem chamar finalize_itinerary; o roteiro pode estar incompleto."
+                        )
                         if log_step_fn:
-                            log_step_fn(db, context.run, "finish_rejected", "failed", "Agent tried to finish without finalize_itinerary")
-                        break
+                            log_step_fn(db, context.run, "finish_unfinalized", "completed",
+                                        "Agent finished without finalize_itinerary")
                     context.final_message = params.get("message", reasoning)
                     context.is_complete = True
                     if log_step_fn:
@@ -220,7 +223,7 @@ class CentralMind:
                     "success": result.success,
                 })
 
-                if result.success and tool_name in ("reorder_day", "update_item", "remove_item", "insert_item", "rollback_version", "start_itinerary", "place_item", "finalize_itinerary"):
+                if result.success and tool_name in ("set_day", "update_item", "remove_item", "insert_item", "rollback_version", "start_itinerary", "place_item", "finalize_itinerary"):
                     context.applied_changes.append({
                         "mutation_type": tool_name,
                         "rationale": params.get("rationale", ""),
@@ -311,6 +314,9 @@ class CentralMind:
 
         interests_str = ", ".join(trip.interests) if hasattr(trip, "interests") and trip.interests else "exploracao geral"
         dietary_str = ", ".join(trip.dietary_restrictions) if hasattr(trip, "dietary_restrictions") and trip.dietary_restrictions else "nenhuma"
+        languages_str = ", ".join(trip.languages) if getattr(trip, "languages", None) else "pt"
+        age_str = getattr(trip, "age_range", None) or "nao informado"
+        sex_str = getattr(trip, "traveler_sex", None) or "nao informado"
         n_days = max((trip.end_date - trip.start_date).days + 1, 1)
 
         mode_instructions = self._get_mode_instructions(db, context, active)
@@ -328,12 +334,17 @@ Destination: {trip.destination}
 Dates: {trip.start_date.isoformat()} to {trip.end_date.isoformat()} ({n_days} days)
 Budget: {trip.budget} {trip.currency}
 Style: {trip.style or "balanced"}
+Age range: {age_str}
+Sex: {sex_str}
+Spoken languages: {languages_str}
 Interests: {interests_str}
 Dietary: {dietary_str}
 Mobility: {getattr(trip, "mobility_notes", "nenhuma") or "nenhuma"}
 Has car: {getattr(trip, "has_car", False)}
 Accommodation: {getattr(trip, "accommodation_name", "not set")} ({getattr(trip, "accommodation_lat", "?")}, {getattr(trip, "accommodation_lng", "?")})
 Daily schedule: {getattr(trip, "daily_start_time", "09:00")} to {getattr(trip, "daily_end_time", "22:00")}
+
+Use this profile to tailor every choice: match activities and venues to the traveler's age, interests and pace; prefer places that accommodate the spoken languages; respect dietary and mobility constraints when picking restaurants and routes.
 
 == CURRENT STATE ==
 Places saved: {places["total"]}
@@ -355,7 +366,7 @@ Step {context.budget.current_step + 1} | Remaining: {context.budget.steps_remain
 5. For itinerary generation, you MUST have places saved first.
 6. Respond to users in Brazilian Portuguese.
 7. CRITICAL: You MUST use tools to make changes. You CANNOT claim to have made a change without calling the appropriate tool. If the user asks to remove/update/add something, you MUST call remove_item/update_item/insert_item with the correct item ID from the itinerary above.
-8. For "reorder day" or "start later" requests, use the reorder_day tool with the target date.
+8. To reorganize a whole day (reorder, start later, make the afternoon lighter, swap activities), call set_day with the FULL ordered list of items you want for that day — you decide the order and times; the tool just saves and validates them.
 9. Use the exact item IDs shown in the ACTIVE ITINERARY ITEMS section above.
 
 == OUTPUT FORMAT ==
@@ -414,10 +425,10 @@ To signal completion:
                     "Only re-search if you believe the pool lacks diversity or doesn't cover the trip duration well."
                 )
 
-            pace = getattr(context.trip, "travel_pace", None) or "balanced"
-            if pace == "relaxed":
+            pace = (getattr(context.trip, "travel_pace", None) or "balanced").strip().lower()
+            if pace in ("leve", "relaxed", "relaxado", "tranquilo"):
                 pace_guidance = "Traveler prefers a RELAXED pace. Cap at 4 activities per day. Leave long gaps for spontaneous exploration."
-            elif pace in ("intensive", "fast"):
+            elif pace in ("intenso", "intensive", "fast", "rapido"):
                 pace_guidance = "Traveler wants an INTENSIVE pace. Schedule 6-7 activities per day. Maximize coverage."
             else:
                 pace_guidance = "Traveler has a BALANCED pace. Target 5 activities per day."
@@ -426,7 +437,7 @@ To signal completion:
                 "You ARE the travel planner. Build a complete, realistic, day-by-day itinerary that a real person can follow.\n"
                 f"{replan_hint}\n\n"
                 "== WORKFLOW ==\n"
-                "1. Search for places (search_places_by_interest — 4-6 diverse queries)\n"
+                "1. Search for places (search_places — 4-6 diverse queries)\n"
                 "2. Call list_saved_places ONCE to review all options\n"
                 "3. Call get_weather_forecast\n"
                 "4. Call start_itinerary\n"
@@ -445,7 +456,7 @@ To signal completion:
                 "    Markets, shopping, lighter attractions, churches, scenic walks.\n"
                 "    Stay in the same geographic zone when possible.\n\n"
                 "  DINNER (19:30-21:30): 1 restaurant\n"
-                "    Choose based on evening location or near hotel. Never skip dinner.\n\n"
+                "    Choose based on evening location or near the accommodation. Never skip dinner.\n\n"
                 "  OPTIONAL EVENING (21:30+): bar, show, or nightlife if the traveler's style fits.\n\n"
                 "This means each day has 6-8 items minimum: morning activities + lunch + afternoon activities + dinner.\n"
                 "If a day has fewer than 6 items or is missing lunch/dinner, it is INCOMPLETE.\n\n"
@@ -453,7 +464,7 @@ To signal completion:
                 "- Each day should focus on ONE area/neighborhood of the city.\n"
                 "- Pick a cluster of nearby places and fill the day from them.\n"
                 "- Travel between consecutive items should be <20min. If you see >20min in the response, you're zigzagging.\n"
-                "- Day 1: closest area to hotel. Day 2+: expand outward to other neighborhoods.\n\n"
+                "- Day 1: closest area to the accommodation. Day 2+: expand outward to other neighborhoods.\n\n"
                 "== DURATIONS (you decide) ==\n"
                 "You determine how long each activity takes. Guidelines:\n"
                 "  Squares, viewpoints, bridges: 30-45min\n"
@@ -558,8 +569,6 @@ To signal completion:
             select(Trip)
             .where(Trip.id == trip_id, Trip.user_id == self.user.id)
             .options(
-                selectinload(Trip.flights),
-                selectinload(Trip.hotels),
                 selectinload(Trip.itinerary_versions).selectinload(ItineraryVersion.items),
                 selectinload(Trip.agent_runs),
                 selectinload(Trip.plan_mutations),
@@ -570,7 +579,7 @@ To signal completion:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trip not found")
         return trip
 
-    def _has_finalized_itinerary(self, context: MindContext) -> bool:
+    def _finalized_itinerary(self, context: MindContext) -> bool:
         return any(
             h["tool"] == "finalize_itinerary" and h.get("success", False)
             for h in context.history
@@ -585,8 +594,6 @@ To signal completion:
                 select(Trip)
                 .where(Trip.id == context.trip.id)
                 .options(
-                    selectinload(Trip.flights),
-                    selectinload(Trip.hotels),
                     selectinload(Trip.places),
                     selectinload(Trip.itinerary_versions).selectinload(ItineraryVersion.items),
                     selectinload(Trip.route_estimates),

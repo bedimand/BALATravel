@@ -35,24 +35,24 @@ from app.schemas.trip import (
     WorkflowStateRead,
 )
 from app.services.agent import AgentCoordinator
-from app.services.agent_tools import get_active_itinerary, tool_reorder_day
+from app.services.agent_tools import get_active_itinerary, tool_set_day
 from app.services.chat import build_chat_response
 from app.services.llm import LLMIntegrationError
 from app.services.planner import build_map_payload
 from app.services.routing import summarize_route_burden
 
 
+# Three coarse stages. current_stage is tracking/UI state only — nothing in the
+# backend branches on it and the frontend doesn't read it (it polls on
+# stage_status == "running"). Fine-grained sub-states (pending decision, replan in
+# progress) are expressed by `decisions` + `stage_status`, not by the stage name.
+#   planning -> agent is building or rebuilding the plan
+#   ready    -> a draft exists and is waiting for the user to approve
+#   active   -> plan approved; trip is live (in-trip edits happen here too)
 WORKFLOW_STAGES = {
-    "trip_intake",
-    "search_context",
-    "curate_places",
-    "enrich_weather",
-    "draft_itinerary",
-    "critic_review",
-    "await_plan_approval",
-    "active_trip",
-    "targeted_replan",
-    "publish_revision",
+    "planning",
+    "ready",
+    "active",
 }
 
 
@@ -74,8 +74,6 @@ class WorkflowService:
             select(Trip)
             .where(Trip.id == trip_id, Trip.user_id == self.user.id)
             .options(
-                selectinload(Trip.flights),
-                selectinload(Trip.hotels),
                 selectinload(Trip.places),
                 selectinload(Trip.route_estimates),
                 selectinload(Trip.itinerary_versions).selectinload(ItineraryVersion.items),
@@ -99,7 +97,7 @@ class WorkflowService:
             return state
         state = TripWorkflowState(
             trip_id=trip.id,
-            current_stage="trip_intake",
+            current_stage="planning",
             stage_status="idle",
             last_synced_at=_now(),
         )
@@ -223,18 +221,14 @@ class WorkflowService:
         return trip.start_date
 
     def _create_change_decision(self, db: Session, trip: Trip, message: str, run: WorkflowRun | None = None) -> None:
+        # The agent (LLM) decides what change the user's message implies — there is
+        # NO keyword routing. build_chat_response interprets the request against the
+        # live itinerary and returns a structured proposal, which the user approves
+        # before anything is applied.
         active = get_active_itinerary(trip)
         places = self._load_places(db, trip.id)
         proposal: dict[str, Any] | None = None
-        lowered = message.lower()
-        if active and any(token in lowered for token in ["chuva", "rain", "atras", "late", "walking", "andar", "afternoon", "tarde", "today", "hoje"]):
-            proposal = {
-                "type": "reorder_day",
-                "title": "Reorganizar o dia atual",
-                "reason": message,
-                "payload": {"date": self._default_today_date(trip).isoformat()},
-            }
-        elif active:
+        if active:
             try:
                 preview = build_chat_response(trip, active, places, message)
             except LLMIntegrationError as exc:
@@ -283,11 +277,13 @@ class WorkflowService:
         if proposal_type in {"generate_itinerary", "update_item"}:
             AgentCoordinator(self.user).apply_change(db, trip.id, ProposedChange.model_validate(proposal))
             return
-        if proposal_type == "reorder_day":
-            date_text = str((proposal.get("payload") or {}).get("date") or "").strip()
+        if proposal_type == "set_day":
+            payload = proposal.get("payload") or {}
+            date_text = str(payload.get("date") or "").strip()
+            items = payload.get("items") or []
             if not date_text:
-                raise HTTPException(status_code=400, detail="Missing date for reorder_day proposal.")
-            tool_reorder_day(db, trip, date_text, rationale=str(proposal.get("reason") or "Workflow reorder"), run=None)
+                raise HTTPException(status_code=400, detail="Missing date for set_day proposal.")
+            tool_set_day(db, trip, date_text, items, rationale=str(proposal.get("reason") or "Workflow set day"), run=None)
             return
         raise HTTPException(status_code=400, detail="Unsupported proposal type.")
 
@@ -309,11 +305,15 @@ class WorkflowService:
             warnings.append(f"Agent execution failed: {str(e)}")
             self._log_step(db, run, "agent_error", "failed", f"Execution error: {str(e)}")
 
+        run_warnings = getattr(run, "warnings", None)
+        if run_warnings:
+            warnings.extend(run_warnings)
+
         trip = self._load_trip(db, trip.id)
         active = get_active_itinerary(trip)
 
         if active:
-            state.current_stage = "await_plan_approval"
+            state.current_stage = "ready"
             self._replace_artifact(
                 db,
                 trip,
@@ -332,7 +332,7 @@ class WorkflowService:
             db.commit()
             self._finish_run(db, state, run, stage_status="waiting_user")
         else:
-            state.current_stage = "trip_intake"
+            state.current_stage = "planning"
             db.add(state)
             db.commit()
             self._finish_run(db, state, run, stage_status="failed")
@@ -350,7 +350,9 @@ class WorkflowService:
         trip = self._load_trip(db, trip_id)
         state, run = self._start_run(db, trip, "in_trip_update" if get_active_itinerary(trip) else "setup")
         state.last_user_goal = message
-        state.current_stage = "targeted_replan" if get_active_itinerary(trip) else state.current_stage
+        # In-trip edits happen while the trip is active; a pending change is
+        # expressed by the change_approval decision, not by a distinct stage.
+        state.current_stage = "active" if get_active_itinerary(trip) else state.current_stage
         db.add(state)
         db.commit()
         self._create_change_decision(db, trip, message, run=run)
@@ -372,7 +374,7 @@ class WorkflowService:
 
         state = self._get_or_create_state(db, trip)
         if decision.kind == "plan_approval":
-            state.current_stage = "active_trip" if action == "approve" else "targeted_replan"
+            state.current_stage = "active" if action == "approve" else "planning"
             state.stage_status = "ready" if action == "approve" else "waiting_user"
             db.add(state)
             db.commit()
@@ -381,10 +383,6 @@ class WorkflowService:
         if decision.kind == "change_approval" and action == "approve":
             proposal = (decision.payload_json or {}).get("proposal") or {}
             self._apply_change_proposal(db, trip, proposal)
-            state.current_stage = "publish_revision"
-            state.stage_status = "ready"
-            db.add(state)
-            db.commit()
             self._replace_artifact(
                 db,
                 trip,
@@ -393,13 +391,14 @@ class WorkflowService:
                 str(proposal.get("reason") or "Mudanca aprovada e aplicada."),
                 {"proposal": proposal},
             )
-            state.current_stage = "active_trip"
+            state.current_stage = "active"
+            state.stage_status = "ready"
             db.add(state)
             db.commit()
             return self.build_workspace(db, trip.id)
 
         if decision.kind == "change_approval" and action == "reject":
-            state.current_stage = "active_trip"
+            state.current_stage = "active"
             state.stage_status = "ready"
             db.add(state)
             db.commit()
@@ -408,38 +407,16 @@ class WorkflowService:
         return self.build_workspace(db, trip.id)
 
     def replan_day(self, db: Session, trip_id: int, target_date: date, goal: str) -> WorkspaceResponse:
+        # Thin shortcut over the chat flow: the agent (via _create_change_decision)
+        # decides the new day and proposes it for approval. No hardcoded reorder.
         trip = self._load_trip(db, trip_id)
         state, run = self._start_run(db, trip, "replan")
-        state.last_user_goal = goal
-        state.current_stage = "targeted_replan"
+        message = f"Reorganize o dia {target_date.isoformat()}: {goal}"
+        state.last_user_goal = message
+        state.current_stage = "active"
         db.add(state)
         db.commit()
-        proposal = {
-            "type": "reorder_day",
-            "title": f"Reorganizar {target_date.isoformat()}",
-            "reason": goal,
-            "payload": {"date": target_date.isoformat()},
-        }
-        self._replace_artifact(
-            db,
-            trip,
-            "change_diff",
-            proposal["title"],
-            proposal["reason"],
-            {"proposal": proposal},
-            run=run,
-        )
-        self._replace_decision(
-            db,
-            trip,
-            "change_approval",
-            proposal["title"],
-            proposal["reason"],
-            [{"id": "approve", "label": "Aprovar"}, {"id": "reject", "label": "Rejeitar"}],
-            "approve",
-            payload_json={"proposal": proposal},
-            run=run,
-        )
+        self._create_change_decision(db, trip, message, run=run)
         self._log_step(db, run, "replan_day", "completed", "Pedido de replanejamento preparado para aprovacao.", None, {"date": target_date.isoformat(), "goal": goal})
         self._finish_run(db, state, run, stage_status="waiting_user")
         return self.build_workspace(db, trip.id)
@@ -495,7 +472,7 @@ class WorkflowService:
             state = self._get_or_create_state(db, trip)
         else:
             state, run = self._start_run(db, trip, "selection_rebuild")
-        state.current_stage = "draft_itinerary"
+        state.current_stage = "planning"
         db.add(state)
         db.commit()
 
@@ -527,7 +504,7 @@ class WorkflowService:
             {"selected_place_count": len(selected_places)},
             {"itinerary_id": active.id if active else None},
         )
-        state.current_stage = "await_plan_approval"
+        state.current_stage = "ready"
         db.add(state)
         db.commit()
         self._finish_run(db, state, run, stage_status="waiting_user")

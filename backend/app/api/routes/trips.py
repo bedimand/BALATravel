@@ -19,7 +19,6 @@ from app.schemas.trip import (
     MapResponse,
     PlaceSelectionUpdate,
     PlaceRead,
-    SearchResponse,
     ShareLinkResponse,
     TodaySummaryRead,
     TripCreate,
@@ -101,8 +100,6 @@ def _get_trip_or_404(db: Session, current_user: User, trip_id: int) -> Trip:
         select(Trip)
         .where(Trip.id == trip_id, Trip.user_id == current_user.id)
         .options(
-            selectinload(Trip.flights),
-            selectinload(Trip.hotels),
             selectinload(Trip.places),
             selectinload(Trip.route_estimates),
             selectinload(Trip.itinerary_versions).selectinload(ItineraryVersion.items),
@@ -134,7 +131,6 @@ def create_trip(
 ) -> Trip:
     _validate_trip_dates(payload.start_date, payload.end_date)
     trip_payload = payload.model_dump()
-    trip_payload["origin_iata"] = None
     trip_payload["currency"] = trip_payload.get("currency") or current_user.currency or "BRL"
     trip_payload["locale"] = trip_payload.get("locale") or current_user.locale or "pt-BR"
     trip = Trip(user_id=current_user.id, **trip_payload)
@@ -156,8 +152,6 @@ def list_trips(current_user: User = Depends(get_current_user), db: Session = Dep
         .where(Trip.user_id == current_user.id)
         .order_by(Trip.created_at.desc())
         .options(
-            selectinload(Trip.flights),
-            selectinload(Trip.hotels),
             selectinload(Trip.places),
             selectinload(Trip.route_estimates),
             selectinload(Trip.itinerary_versions).selectinload(ItineraryVersion.items),
@@ -193,14 +187,6 @@ def update_trip_place_selection(
 def update_trip(trip_id: int, payload: TripUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Trip:
     trip = _get_trip_or_404(db, current_user, trip_id)
     updates = payload.model_dump(exclude_unset=True)
-    if "origin_city" in updates:
-        updates["origin_iata"] = None
-    if "selected_flight_id" in updates and updates["selected_flight_id"] is not None:
-        if not any(flight.id == updates["selected_flight_id"] for flight in trip.flights):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Selected flight does not belong to this trip.")
-    if "selected_hotel_id" in updates and updates["selected_hotel_id"] is not None:
-        if not any(hotel.id == updates["selected_hotel_id"] for hotel in trip.hotels):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Selected hotel does not belong to this trip.")
     next_start = updates.get("start_date", trip.start_date)
     next_end = updates.get("end_date", trip.end_date)
     _validate_trip_dates(next_start, next_end)
@@ -209,21 +195,6 @@ def update_trip(trip_id: int, payload: TripUpdate, current_user: User = Depends(
     db.add(trip)
     db.commit()
     return _get_trip_or_404(db, current_user, trip_id)
-
-
-@router.post("/{trip_id}/search", response_model=SearchResponse)
-def search_trip_options(trip_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> SearchResponse:
-    result = AgentCoordinator(current_user).search_trip(db, trip_id)
-    refreshed_trip = _get_trip_or_404(db, current_user, trip_id)
-    places_from_db = list(db.scalars(select(Place).where(Place.trip_id == trip_id).order_by(Place.rating.desc())))
-    return SearchResponse(
-        trip_id=refreshed_trip.id,
-        destination=refreshed_trip.destination,
-        flights=refreshed_trip.flights,
-        hotels=refreshed_trip.hotels,
-        places=places_from_db,
-        warnings=result.warnings,
-    )
 
 
 @router.post("/{trip_id}/itinerary/generate", response_model=BackgroundRunResponse, status_code=202)

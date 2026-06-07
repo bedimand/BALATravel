@@ -14,16 +14,8 @@ type Props = {
 
 const STEP_PROMPTS: Record<string, string[]> = {
   search: [
-    "Busque boas opcoes de voo, hospedagem e atracoes para esta viagem.",
+    "Busque boas atracoes para esta viagem.",
     "Que criterios devo usar para comparar bem as opcoes desta viagem?"
-  ],
-  flight: [
-    "Compare os voos encontrados e destaque os melhores trade-offs para eu decidir.",
-    "Quais voos parecem melhores para custo x conforto?"
-  ],
-  hotel: [
-    "Compare as hospedagens encontradas e me diga os pros e contras de cada uma.",
-    "Qual hotel parece melhor como base para essa viagem?"
   ],
   places: [
     "Revise as atracoes sugeridas e diga se falta algo importante para este perfil.",
@@ -37,8 +29,6 @@ const STEP_PROMPTS: Record<string, string[]> = {
 
 const STEP_TITLES: Record<string, string> = {
   search: "Buscar contexto",
-  flight: "Escolher voo",
-  hotel: "Escolher hospedagem",
   places: "Revisar atracoes",
   itinerary: "Refinar roteiro"
 };

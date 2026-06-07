@@ -1,13 +1,31 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { api } from "@/lib/api";
-import type { WorkspaceResponse } from "@/lib/types";
+import type { WorkspaceResponse, AgentThread } from "@/lib/types";
 import { AgentThinking } from "./agent-thinking";
 import { MapPanel } from "./map-panel";
 
-type Props = {
-  tripId: string;
+type Props = { tripId: string };
+
+const QUICK_PROMPTS = [
+  "Adicione mais restaurantes ao roteiro",
+  "Reduza os deslocamentos do dia 2",
+  "Inclua opções culturais e museus",
+  "Ajuste para ritmo mais tranquilo",
+  "Substitua atividades noturnas",
+  "Otimize o roteiro por proximidade",
+];
+
+const KIND_ICONS: Record<string, string> = {
+  restaurant: "🍽",
+  museum: "🏛",
+  attraction: "🎯",
+  park: "🌳",
+  nightlife: "🎭",
+  shopping: "🛍",
+  hotel: "🏨",
+  default: "📍",
 };
 
 export function TripPlanner({ tripId }: Props) {
@@ -15,10 +33,20 @@ export function TripPlanner({ tripId }: Props) {
   const [loading, setLoading] = useState(true);
   const [activeDay, setActiveDay] = useState<string | null>("all");
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
-  const [composerText, setComposerText] = useState("");
-  const [busyMessage, setBusyMessage] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const [thread, setThread] = useState<AgentThread | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  async function loadWorkspace() {
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const loadWorkspace = useCallback(async () => {
     try {
       const w = await api.getWorkspace(tripId);
       setWorkspace(w);
@@ -27,273 +55,597 @@ export function TripPlanner({ tripId }: Props) {
     } finally {
       setLoading(false);
     }
-  }
+  }, [tripId]);
+
+  const loadThread = useCallback(async () => {
+    try {
+      const t = await api.getAgentThread(tripId);
+      setThread(t);
+    } catch (e) {
+      console.error(e);
+    }
+  }, [tripId]);
 
   useEffect(() => {
     loadWorkspace();
-  }, [tripId]);
+    loadThread();
+  }, [loadWorkspace, loadThread]);
 
-  const isAgentThinking = workspace?.workflow.stage_status === "running"
-    || workspace?.workflow_runs?.some(r => r.status === "running");
+  const isAgentThinking = useMemo(
+    () =>
+      workspace?.workflow.stage_status === "running" ||
+      workspace?.workflow_runs?.some((r) => r.status === "running"),
+    [workspace]
+  );
+
+  useEffect(() => {
+    if (isAgentThinking) {
+      pollRef.current = setInterval(async () => {
+        await loadWorkspace();
+        await loadThread();
+      }, 4000);
+    } else {
+      if (pollRef.current) clearInterval(pollRef.current);
+    }
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [isAgentThinking, loadWorkspace, loadThread]);
+
+  useEffect(() => {
+    if (chatOpen) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [thread, chatOpen]);
 
   const dates = useMemo(() => {
     if (!workspace) return [];
-    return Array.from(new Set(workspace.map.markers.map(m => m.date).filter(Boolean))) as string[];
+    return Array.from(
+      new Set(workspace.map.markers.map((m) => m.date).filter(Boolean))
+    ) as string[];
   }, [workspace]);
 
-  const selectedMarker = useMemo(() => workspace?.map.markers.find(m => m.id === selectedPlaceId), [workspace, selectedPlaceId]);
+  const selectedMarker = useMemo(
+    () => workspace?.map.markers.find((m) => m.id === selectedPlaceId),
+    [workspace, selectedPlaceId]
+  );
 
-  async function handleChatSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!composerText.trim() || busyMessage) return;
-    setBusyMessage(true);
+  const visibleMarkers = useMemo(
+    () =>
+      workspace?.map.markers
+        .filter(
+          (m) =>
+            (!activeDay || activeDay === "all" || m.date === activeDay) &&
+            m.kind !== "accommodation"
+        )
+        .sort((a, b) => (a.start_time || "").localeCompare(b.start_time || "")) ?? [],
+    [workspace, activeDay]
+  );
+
+  async function sendChatMessage(message: string) {
+    if (!message.trim() || chatBusy) return;
+    setChatBusy(true);
     try {
-      await api.sendWorkflowMessage(tripId, { message: composerText });
-      setComposerText("");
-      // Need to show AgentThinking again
+      await api.sendWorkflowMessage(tripId, { message });
+      setChatInput("");
       await loadWorkspace();
+      await loadThread();
+      showToast("Mensagem enviada! Agente processando...");
     } catch (e) {
       console.error(e);
+      showToast("Erro ao enviar mensagem.");
     } finally {
-      setBusyMessage(false);
+      setChatBusy(false);
     }
   }
 
   if (loading && !workspace) {
-    return <div style={{ background: "#111", height: "100vh", color: "white", display: "grid", placeItems: "center" }}>Carregando Workspace...</div>;
+    return (
+      <div style={{
+        background: "linear-gradient(135deg, #0a0f1e 0%, #111827 100%)",
+        height: "100vh", color: "white", display: "grid", placeItems: "center"
+      }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{
+            width: "48px", height: "48px", border: "3px solid rgba(0,229,255,0.3)",
+            borderTopColor: "#00e5ff", borderRadius: "50%", margin: "0 auto 1rem",
+            animation: "spin 1s linear infinite"
+          }} />
+          <p style={{ opacity: 0.6, fontSize: "0.9rem" }}>Carregando roteiro...</p>
+        </div>
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
   }
 
-  if (!workspace) return <div>Falha ao carregar.</div>;
+  if (!workspace) return <div style={{ color: "white", padding: "2rem" }}>Falha ao carregar.</div>;
+
+  const allRuns = thread?.runs ?? [];
 
   return (
-    <main className="workspace-app" style={{ 
-      position: "relative", 
-      height: "100dvh", 
-      overflow: "hidden", 
-      padding: 0, 
-      display: "flex", 
-      flexDirection: "column" 
+    <main style={{
+      position: "relative", height: "100dvh", overflow: "hidden",
+      padding: 0, display: "flex", flexDirection: "column",
+      background: "#0a0f1e"
     }}>
-      
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes fadeSlideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .itinerary-item:hover { background: rgba(255,255,255,0.07) !important; transform: translateX(3px); }
+        .day-btn:hover { background: rgba(255,255,255,0.12) !important; }
+        .chat-bubble-in { animation: fadeSlideUp 0.25s ease both; }
+        .quick-chip:hover { background: rgba(0,229,255,0.15) !important; border-color: rgba(0,229,255,0.5) !important; }
+        .close-btn:hover { background: rgba(255,255,255,0.15) !important; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+      `}</style>
+
       {isAgentThinking && (
-        <AgentThinking tripId={Number(tripId)} onComplete={() => loadWorkspace()} />
+        <AgentThinking tripId={Number(tripId)} onComplete={() => { loadWorkspace(); loadThread(); }} />
       )}
 
-      {/* FULLSCREEN MAP */}
+      {/* MAP */}
       <div style={{ position: "absolute", inset: 0 }}>
-        <MapPanel 
-          map={workspace.map} 
+        <MapPanel
+          map={workspace.map}
           selectedPlaceId={selectedPlaceId}
-          activeDay={activeDay} 
-          onPlaceClick={(id) => setSelectedPlaceId(id)} 
+          activeDay={activeDay}
+          onPlaceClick={(id) => setSelectedPlaceId(id)}
           baseLat={workspace.trip.accommodation_lat || 0}
           baseLng={workspace.trip.accommodation_lng || 0}
         />
       </div>
 
-      {/* LEFT SIDEBAR (ITINERARY) */}
+      {/* TOAST */}
+      {toast && (
+        <div style={{
+          position: "absolute", top: "1rem", left: "50%", transform: "translateX(-50%)",
+          zIndex: 200, background: "rgba(0,229,255,0.15)", backdropFilter: "blur(20px)",
+          border: "1px solid rgba(0,229,255,0.4)", borderRadius: "2rem",
+          color: "white", padding: "0.6rem 1.5rem", fontSize: "0.85rem",
+          animation: "fadeSlideUp 0.3s ease both", whiteSpace: "nowrap"
+        }}>
+          {toast}
+        </div>
+      )}
+
+      {/* LEFT SIDEBAR */}
       <aside style={{
         position: "absolute", top: "1rem", left: "1rem", bottom: "1rem", zIndex: 30,
-        width: "380px", background: "rgba(15, 23, 42, 0.8)", backdropFilter: "blur(20px)",
-        borderRadius: "1.5rem", border: "1px solid rgba(255,255,255,0.1)", color: "white",
-        display: "flex", flexDirection: "column", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
-        overflow: "hidden"
+        width: "360px", background: "rgba(10, 15, 30, 0.85)", backdropFilter: "blur(24px)",
+        borderRadius: "1.5rem", border: "1px solid rgba(255,255,255,0.08)", color: "white",
+        display: "flex", flexDirection: "column", boxShadow: "0 25px 60px -10px rgba(0,0,0,0.6)",
+        overflow: "hidden", transition: "box-shadow 0.3s"
       }}>
-        <div style={{ padding: "1.5rem", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-          <h1 style={{ fontSize: "1.4rem", fontWeight: 700, margin: 0 }}>{workspace.trip.destination}</h1>
-          <p style={{ margin: "0.4rem 0 0", opacity: 0.6, fontSize: "0.85rem" }}>
-            {workspace.trip.start_date} — {workspace.trip.end_date}
-          </p>
-          <div style={{ marginTop: "1rem", display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
-            <button onClick={() => setActiveDay("all")} style={{
-              padding: "0.4rem 0.8rem", borderRadius: "0.8rem", border: "none", fontSize: "0.8rem", cursor: "pointer",
-              background: activeDay === "all" ? "var(--primary)" : "rgba(255,255,255,0.05)", color: "white"
-            }}>Todos</button>
-            {dates.sort().map((d, i) => (
-              <button key={d} onClick={() => setActiveDay(d)} style={{
-                padding: "0.4rem 0.8rem", borderRadius: "0.8rem", border: "none", fontSize: "0.8rem", cursor: "pointer",
-                background: activeDay === d ? "var(--primary)" : "rgba(255,255,255,0.05)", color: "white"
-              }}>Dia {i + 1}</button>
+        {/* Header */}
+        <div style={{ padding: "1.25rem 1.5rem", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <h1 style={{ fontSize: "1.3rem", fontWeight: 800, margin: 0, letterSpacing: "-0.3px" }}>
+                {workspace.trip.destination}
+              </h1>
+              <p style={{ margin: "0.3rem 0 0", opacity: 0.5, fontSize: "0.8rem" }}>
+                {workspace.trip.start_date} — {workspace.trip.end_date}
+              </p>
+            </div>
+            {isAgentThinking && (
+              <span style={{
+                fontSize: "0.7rem", background: "rgba(0,229,255,0.15)", color: "#00e5ff",
+                padding: "0.3rem 0.7rem", borderRadius: "1rem", fontWeight: 700,
+                animation: "pulse 1.5s ease infinite"
+              }}>
+                IA processando...
+              </span>
+            )}
+          </div>
+
+          {/* Day filters */}
+          <div style={{ marginTop: "0.9rem", display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
+            {["all", ...dates.sort()].map((d, i) => (
+              <button
+                key={d}
+                className="day-btn"
+                onClick={() => setActiveDay(d)}
+                style={{
+                  padding: "0.35rem 0.75rem", borderRadius: "0.7rem", border: "none",
+                  fontSize: "0.75rem", cursor: "pointer", fontWeight: 600,
+                  background: activeDay === d ? "#00e5ff" : "rgba(255,255,255,0.06)",
+                  color: activeDay === d ? "#000" : "white",
+                  transition: "all 0.2s ease"
+                }}
+              >
+                {d === "all" ? "Todos" : `Dia ${i}`}
+              </button>
             ))}
           </div>
         </div>
 
-        <div style={{ flex: 1, overflowY: "auto", padding: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
-          {workspace.map.markers
-            .filter(m => (!activeDay || activeDay === "all" || m.date === activeDay) && m.kind !== "accommodation") // Hide accommodation from list
-            .sort((a, b) => (a.start_time || "").localeCompare(b.start_time || ""))
-            .map((marker) => (
-              <div key={marker.id} 
-                onClick={() => setSelectedPlaceId(marker.id)}
-                style={{
-                  padding: "1rem", borderRadius: "1.2rem", 
-                  background: selectedPlaceId === marker.id ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.03)",
-                  border: `1px solid ${selectedPlaceId === marker.id ? "var(--primary)" : "rgba(255,255,255,0.05)"}`,
-                  boxShadow: selectedPlaceId === marker.id ? "0 0 20px rgba(0, 255, 65, 0.15)" : "none",
-                  cursor: "pointer", transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)"
-                }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.5rem" }}>
-                   <div style={{ flex: 1 }}>
-                     <strong style={{ fontSize: "0.95rem", color: selectedPlaceId === marker.id ? "var(--primary)" : "white", display: "block" }}>{marker.title}</strong>
-                     <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.2rem", alignItems: "center" }}>
-                        <span style={{ fontSize: "0.65rem", opacity: 0.6, textTransform: "uppercase", letterSpacing: "0.5px" }}>{marker.kind}</span>
-                        {marker.rating && <span style={{ fontSize: "0.7rem", color: "#f1c40f" }}>★ {marker.rating}</span>}
-                     </div>
-                   </div>
-                   {marker.start_time && <span style={{ fontSize: "0.75rem", background: "rgba(0,255,65,0.1)", color: "#00ff41", padding: "2px 8px", borderRadius: "6px", fontWeight: 600, whiteSpace: "nowrap" }}>{marker.start_time}</span>}
+        {/* Itinerary list */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "0.75rem" }}>
+          {visibleMarkers.length === 0 ? (
+            <div style={{ textAlign: "center", opacity: 0.35, marginTop: "3rem", fontSize: "0.85rem" }}>
+              <p style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>🗺</p>
+              Nenhuma atividade{activeDay !== "all" ? " para este dia" : ""} planejada.
+            </div>
+          ) : (
+            visibleMarkers.map((marker) => {
+              const icon = KIND_ICONS[marker.kind] ?? KIND_ICONS.default;
+              const isSelected = selectedPlaceId === marker.id;
+              return (
+                <div
+                  key={marker.id}
+                  className="itinerary-item"
+                  onClick={() => setSelectedPlaceId(isSelected ? null : marker.id)}
+                  style={{
+                    padding: "0.85rem 1rem", borderRadius: "1rem", marginBottom: "0.5rem",
+                    background: isSelected ? "rgba(0,229,255,0.08)" : "rgba(255,255,255,0.02)",
+                    border: `1px solid ${isSelected ? "rgba(0,229,255,0.4)" : "rgba(255,255,255,0.04)"}`,
+                    boxShadow: isSelected ? "0 0 20px rgba(0,229,255,0.1)" : "none",
+                    cursor: "pointer", transition: "all 0.25s cubic-bezier(0.4,0,0.2,1)"
+                  }}
+                >
+                  <div style={{ display: "flex", gap: "0.75rem", alignItems: "flex-start" }}>
+                    <span style={{
+                      fontSize: "1.2rem", width: "2rem", height: "2rem", flexShrink: 0,
+                      display: "grid", placeItems: "center",
+                      background: "rgba(255,255,255,0.05)", borderRadius: "0.6rem"
+                    }}>{icon}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "0.5rem" }}>
+                        <strong style={{
+                          fontSize: "0.88rem", color: isSelected ? "#00e5ff" : "white",
+                          display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"
+                        }}>{marker.title}</strong>
+                        {marker.start_time && (
+                          <span style={{
+                            fontSize: "0.7rem", background: "rgba(0,229,255,0.12)", color: "#00e5ff",
+                            padding: "2px 7px", borderRadius: "5px", fontWeight: 700, whiteSpace: "nowrap", flexShrink: 0
+                          }}>{marker.start_time}</span>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.2rem", alignItems: "center" }}>
+                        <span style={{ fontSize: "0.65rem", opacity: 0.45, textTransform: "uppercase", letterSpacing: "0.5px" }}>{marker.kind}</span>
+                        {marker.rating && <span style={{ fontSize: "0.68rem", color: "#f1c40f" }}>★ {marker.rating}</span>}
+                      </div>
+                      {isSelected && marker.summary && (
+                        <p style={{ fontSize: "0.75rem", opacity: 0.6, marginTop: "0.4rem", lineHeight: 1.4, animation: "fadeIn 0.2s ease" }}>
+                          {marker.summary}
+                        </p>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <p style={{ fontSize: "0.75rem", opacity: 0.5, marginTop: "0.6rem", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", lineHeight: 1.4 }}>
-                  {marker.summary}
-                </p>
-              </div>
-            ))}
-            {workspace.map.markers.filter(m => (!activeDay || activeDay === "all" || m.date === activeDay) && m.kind !== "accommodation").length === 0 && (
-              <p style={{ textAlign: "center", opacity: 0.4, marginTop: "2rem", fontSize: "0.9rem" }}>Nenhuma atração{activeDay !== "all" ? " para este dia" : ""} planejada.</p>
-            )}
+              );
+            })
+          )}
         </div>
 
-        {/* CHAT AT SIDEBAR BOTTOM */}
-        <div style={{ padding: "1rem", borderTop: "1px solid rgba(255,255,255,0.1)", background: "rgba(0,0,0,0.2)" }}>
-           <form onSubmit={handleChatSubmit} style={{ display: "flex", gap: "0.5rem" }}>
-             <input 
-               type="text" 
-               value={composerText} 
-               onChange={e => setComposerText(e.target.value)} 
-               placeholder="Ajustar roteiro..."
-               style={{ flex: 1, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "0.8rem", color: "white", padding: "0.6rem 1rem", outline: "none", fontSize: "0.9rem" }}
-             />
-             <button type="submit" disabled={busyMessage} style={{
-               background: "var(--primary)", color: "white", border: "none", borderRadius: "0.8rem",
-               width: "40px", height: "40px", display: "grid", placeItems: "center", cursor: "pointer"
-             }}>
-               {busyMessage ? "..." : "→"}
-             </button>
-           </form>
+        {/* Chat toggle button */}
+        <div style={{ padding: "0.75rem 1rem", borderTop: "1px solid rgba(255,255,255,0.07)" }}>
+          <button
+            onClick={() => setChatOpen((v) => !v)}
+            style={{
+              width: "100%", padding: "0.75rem 1rem", borderRadius: "1rem",
+              background: chatOpen ? "rgba(0,229,255,0.12)" : "rgba(255,255,255,0.05)",
+              border: `1px solid ${chatOpen ? "rgba(0,229,255,0.4)" : "rgba(255,255,255,0.08)"}`,
+              color: chatOpen ? "#00e5ff" : "white", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: "0.6rem",
+              fontSize: "0.88rem", fontWeight: 600, transition: "all 0.2s ease"
+            }}
+          >
+            <span style={{ fontSize: "1rem" }}>💬</span>
+            {chatOpen ? "Fechar chat" : "Modificar roteiro com IA"}
+            {allRuns.length > 0 && (
+              <span style={{
+                background: "#00e5ff", color: "#000", borderRadius: "1rem",
+                fontSize: "0.65rem", padding: "1px 6px", fontWeight: 800
+              }}>{allRuns.length}</span>
+            )}
+          </button>
         </div>
       </aside>
 
-      {/* Accommodation/Hotel Summary Bubble (Top Right) */}
-      {workspace.trip.accommodation_name && (
+      {/* CHAT PANEL (right side, slides in) */}
+      <aside style={{
+        position: "absolute", top: "1rem", right: "1rem", bottom: "1rem", zIndex: 25,
+        width: "380px", background: "rgba(10, 15, 30, 0.92)", backdropFilter: "blur(24px)",
+        borderRadius: "1.5rem", border: "1px solid rgba(255,255,255,0.08)", color: "white",
+        display: "flex", flexDirection: "column", boxShadow: "0 25px 60px -10px rgba(0,0,0,0.6)",
+        overflow: "hidden",
+        transform: chatOpen && !selectedPlaceId ? "translateX(0)" : "translateX(calc(100% + 1.5rem))",
+        transition: "transform 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
+        pointerEvents: chatOpen && !selectedPlaceId ? "auto" : "none"
+      }}>
+        {/* Chat header */}
+        <div style={{ padding: "1.25rem 1.5rem", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: "0.8rem" }}>
+          <span style={{ fontSize: "1.4rem" }}>🤖</span>
+          <div style={{ flex: 1 }}>
+            <h2 style={{ margin: 0, fontSize: "1rem", fontWeight: 700 }}>Assistente de Viagem</h2>
+            <p style={{ margin: 0, fontSize: "0.72rem", opacity: 0.45 }}>Peça ajustes no seu roteiro</p>
+          </div>
+          {isAgentThinking && (
+            <span style={{ fontSize: "0.65rem", color: "#00e5ff", animation: "pulse 1.5s infinite", fontWeight: 700 }}>
+              Pensando...
+            </span>
+          )}
+        </div>
+
+        {/* Quick prompts */}
+        <div style={{ padding: "0.75rem 1rem", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
+          {QUICK_PROMPTS.map((p) => (
+            <button
+              key={p}
+              className="quick-chip"
+              onClick={() => sendChatMessage(p)}
+              disabled={chatBusy}
+              style={{
+                padding: "0.3rem 0.7rem", borderRadius: "1rem", cursor: "pointer",
+                background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
+                color: "rgba(255,255,255,0.75)", fontSize: "0.72rem", transition: "all 0.2s ease"
+              }}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+
+        {/* Messages */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+          {allRuns.length === 0 ? (
+            <div style={{ textAlign: "center", opacity: 0.3, marginTop: "3rem" }}>
+              <p style={{ fontSize: "2.5rem", marginBottom: "0.5rem" }}>✈️</p>
+              <p style={{ fontSize: "0.85rem" }}>Nenhuma conversa ainda.<br />Peça uma modificação acima!</p>
+            </div>
+          ) : (
+            allRuns.map((run) => (
+              <div key={run.id} className="chat-bubble-in" style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                {run.user_message && (
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <div style={{
+                      background: "#00e5ff", color: "#000", padding: "0.65rem 1rem",
+                      borderRadius: "1.2rem 1.2rem 0.3rem 1.2rem", maxWidth: "85%",
+                      fontSize: "0.85rem", fontWeight: 500, lineHeight: 1.45
+                    }}>
+                      {run.user_message}
+                    </div>
+                  </div>
+                )}
+                {run.assistant_message && (
+                  <div style={{ display: "flex", justifyContent: "flex-start", gap: "0.5rem" }}>
+                    <span style={{ fontSize: "1.2rem", flexShrink: 0, marginTop: "2px" }}>🤖</span>
+                    <div style={{
+                      background: "rgba(255,255,255,0.07)", padding: "0.65rem 1rem",
+                      borderRadius: "0.3rem 1.2rem 1.2rem 1.2rem", maxWidth: "85%",
+                      fontSize: "0.83rem", lineHeight: 1.55, opacity: 0.9
+                    }}>
+                      {run.assistant_message}
+                    </div>
+                  </div>
+                )}
+                {run.tool_calls?.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem", paddingLeft: "1.7rem" }}>
+                    {run.tool_calls.map((call) => (
+                      <span key={call.id} style={{
+                        fontSize: "0.65rem", padding: "2px 7px", borderRadius: "0.5rem",
+                        background: call.status === "success" ? "rgba(0,229,255,0.1)" : "rgba(255,100,100,0.1)",
+                        color: call.status === "success" ? "#00e5ff" : "#ff6464",
+                        border: `1px solid ${call.status === "success" ? "rgba(0,229,255,0.2)" : "rgba(255,100,100,0.2)"}`
+                      }}>
+                        {call.tool_name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {run.warnings?.length > 0 && (
+                  <div style={{
+                    marginLeft: "1.7rem", padding: "0.5rem 0.75rem", borderRadius: "0.7rem",
+                    background: "rgba(255,200,0,0.08)", border: "1px solid rgba(255,200,0,0.2)", fontSize: "0.75rem", color: "#ffc800"
+                  }}>
+                    {run.warnings.map((w) => <p key={w} style={{ margin: "0.1rem 0" }}>⚠ {w}</p>)}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+          {chatBusy && (
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", opacity: 0.6 }}>
+              <span style={{ fontSize: "1.2rem" }}>🤖</span>
+              <div style={{ display: "flex", gap: "4px" }}>
+                {[0, 1, 2].map((i) => (
+                  <span key={i} style={{
+                    width: "6px", height: "6px", background: "#00e5ff", borderRadius: "50%",
+                    animation: `pulse 1s ease ${i * 0.2}s infinite`
+                  }} />
+                ))}
+              </div>
+            </div>
+          )}
+          <div ref={chatEndRef} />
+        </div>
+
+        {/* Chat input */}
+        <div style={{ padding: "0.85rem 1rem", borderTop: "1px solid rgba(255,255,255,0.07)" }}>
+          <form
+            onSubmit={(e) => { e.preventDefault(); sendChatMessage(chatInput); }}
+            style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}
+          >
+            <textarea
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  sendChatMessage(chatInput);
+                }
+              }}
+              placeholder="Ex: Adicione um jantar romântico no dia 2..."
+              rows={2}
+              style={{
+                flex: 1, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: "0.9rem", color: "white", padding: "0.65rem 1rem", outline: "none",
+                fontSize: "0.85rem", resize: "none", lineHeight: 1.4, fontFamily: "inherit",
+                transition: "border-color 0.2s"
+              }}
+              onFocus={(e) => e.target.style.borderColor = "rgba(0,229,255,0.4)"}
+              onBlur={(e) => e.target.style.borderColor = "rgba(255,255,255,0.1)"}
+            />
+            <button
+              type="submit"
+              disabled={chatBusy || !chatInput.trim()}
+              style={{
+                background: chatBusy || !chatInput.trim() ? "rgba(255,255,255,0.1)" : "#00e5ff",
+                color: chatBusy || !chatInput.trim() ? "rgba(255,255,255,0.4)" : "#000",
+                border: "none", borderRadius: "0.9rem", width: "42px", height: "42px",
+                display: "grid", placeItems: "center", cursor: chatBusy ? "not-allowed" : "pointer",
+                fontSize: "1.1rem", transition: "all 0.2s ease", flexShrink: 0
+              }}
+            >
+              {chatBusy ? (
+                <span style={{ width: "16px", height: "16px", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "white", borderRadius: "50%", display: "block", animation: "spin 0.8s linear infinite" }} />
+              ) : "↑"}
+            </button>
+          </form>
+          <p style={{ margin: "0.4rem 0 0", fontSize: "0.65rem", opacity: 0.3, textAlign: "center" }}>
+            Enter para enviar · Shift+Enter para nova linha
+          </p>
+        </div>
+      </aside>
+
+      {/* ACCOMMODATION BADGE */}
+      {workspace.trip.accommodation_name && !chatOpen && (
         <div style={{
           position: "absolute", top: "1.5rem", right: "1.5rem", zIndex: 10,
-          background: "rgba(15, 23, 42, 0.9)", backdropFilter: "blur(20px)",
-          padding: "0.8rem 1.2rem", borderRadius: "2rem", color: "white",
-          display: "flex", alignItems: "center", gap: "0.8rem", fontSize: "0.85rem",
-          border: "1px solid rgba(255, 255, 255, 0.1)",
-          boxShadow: "0 10px 25px rgba(0,0,0,0.4)"
+          background: "rgba(10, 15, 30, 0.9)", backdropFilter: "blur(20px)",
+          padding: "0.7rem 1.1rem", borderRadius: "2rem", color: "white",
+          display: "flex", alignItems: "center", gap: "0.7rem", fontSize: "0.83rem",
+          border: "1px solid rgba(255,255,255,0.08)",
+          boxShadow: "0 10px 25px rgba(0,0,0,0.4)", animation: "fadeIn 0.3s ease"
         }}>
-          <span style={{ fontSize: "1.2rem" }}>🏠</span>
+          <span>🏠</span>
           <div style={{ lineHeight: 1.2 }}>
-            <span style={{ opacity: 0.6, fontSize: "0.65rem", display: "block", textTransform: "uppercase", fontWeight: 700, letterSpacing: "1px" }}>Hospedagem</span>
-            <strong style={{ fontSize: "0.9rem" }}>{workspace.trip.accommodation_name}</strong>
+            <span style={{ opacity: 0.5, fontSize: "0.6rem", display: "block", textTransform: "uppercase", fontWeight: 700, letterSpacing: "1px" }}>Hospedagem</span>
+            <strong style={{ fontSize: "0.88rem" }}>{workspace.trip.accommodation_name}</strong>
           </div>
         </div>
       )}
 
-      {/* FLOATING PLACE INFO PANEL (RIGHT SIDE) */}
+      {/* PLACE DETAIL PANEL */}
       {selectedPlaceId && selectedMarker && (
         <div style={{
-          position: "absolute", top: "1rem", right: "1rem", zIndex: 20,
-          width: "340px", background: "rgba(15, 23, 42, 0.95)", backdropFilter: "blur(20px)",
+          position: "absolute", top: "1rem", right: "1rem", zIndex: 35,
+          width: "340px", background: "rgba(10, 15, 30, 0.97)", backdropFilter: "blur(24px)",
           borderRadius: "1.5rem", color: "white", overflow: "hidden",
-          boxShadow: "0 30px 60px -12px rgba(0,0,0,0.7)",
-          display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 8rem)",
-          border: "1px solid rgba(255,255,255,0.1)"
+          boxShadow: "0 30px 60px -12px rgba(0,0,0,0.8)",
+          display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 2rem)",
+          border: "1px solid rgba(255,255,255,0.1)",
+          animation: "fadeSlideUp 0.25s ease both"
         }}>
           {selectedMarker.image_url && (
-            <div style={{ position: "relative" }}>
-              <img src={selectedMarker.image_url} alt={selectedMarker.title} style={{ width: "100%", height: "220px", objectFit: "cover" }} />
-              <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: "80px", background: "linear-gradient(to top, rgba(15,23,42,1), transparent)" }} />
+            <div style={{ position: "relative", flexShrink: 0 }}>
+              <img
+                src={selectedMarker.image_url}
+                alt={selectedMarker.title}
+                style={{ width: "100%", height: "200px", objectFit: "cover" }}
+              />
+              <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: "80px", background: "linear-gradient(to top, rgba(10,15,30,1), transparent)" }} />
             </div>
           )}
-          <div style={{ padding: "1.5rem", marginTop: selectedMarker.image_url ? "-1.5rem" : "0", position: "relative", overflowY: "auto" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.8rem" }}>
-              <h2 style={{ margin: 0, fontSize: "1.3rem", fontWeight: 700 }}>{selectedMarker.title}</h2>
-              <button 
+          <div style={{ padding: "1.25rem", overflowY: "auto", flex: 1 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "0.75rem" }}>
+              <h2 style={{ margin: 0, fontSize: "1.2rem", fontWeight: 800, lineHeight: 1.3 }}>{selectedMarker.title}</h2>
+              <button
+                className="close-btn"
                 onClick={() => setSelectedPlaceId(null)}
-                style={{ 
-                  background: "rgba(255,255,255,0.05)", border: "none", color: "white", cursor: "pointer", 
-                  width: "32px", height: "32px", borderRadius: "50%", display: "grid", placeItems: "center",
-                  fontSize: "1.2rem", transition: "background 0.2s"
+                style={{
+                  background: "rgba(255,255,255,0.05)", border: "none", color: "white",
+                  cursor: "pointer", width: "30px", height: "30px", borderRadius: "50%",
+                  display: "grid", placeItems: "center", fontSize: "1rem", flexShrink: 0,
+                  transition: "background 0.2s"
                 }}
-                onMouseOver={e => e.currentTarget.style.background = "rgba(255,255,255,0.15)"}
-                onMouseOut={e => e.currentTarget.style.background = "rgba(255,255,255,0.05)"}
               >×</button>
             </div>
-            
-            <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", marginBottom: "1.2rem" }}>
-               <span style={{ display: "inline-block", background: "rgba(255,255,255,0.1)", padding: "0.3rem 0.8rem", borderRadius: "1rem", fontSize: "0.75rem", fontWeight: 500, opacity: 0.9 }}>
-                 {selectedMarker.kind}
-               </span>
-               {selectedMarker.price_level && (
-                 <span style={{ color: "#f1c40f", fontSize: "0.9rem", fontWeight: 800 }}>
-                   {"$".repeat(selectedMarker.price_level)}
-                 </span>
-               )}
+
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "1rem", flexWrap: "wrap" }}>
+              <span style={{ background: "rgba(255,255,255,0.08)", padding: "0.25rem 0.7rem", borderRadius: "1rem", fontSize: "0.72rem", fontWeight: 500 }}>
+                {selectedMarker.kind}
+              </span>
+              {selectedMarker.price_level && <span style={{ color: "#f1c40f", fontSize: "0.85rem", fontWeight: 800 }}>{"$".repeat(selectedMarker.price_level)}</span>}
+              {selectedMarker.rating && (
+                <span style={{ display: "flex", alignItems: "center", gap: "0.3rem", background: "rgba(241,196,15,0.1)", padding: "0.25rem 0.7rem", borderRadius: "1rem", fontSize: "0.75rem" }}>
+                  <span style={{ color: "#f1c40f" }}>★</span>
+                  <strong>{selectedMarker.rating}</strong>
+                  {selectedMarker.user_ratings_total && <span style={{ opacity: 0.5 }}>({selectedMarker.user_ratings_total.toLocaleString()})</span>}
+                </span>
+              )}
             </div>
 
-            {selectedMarker.rating && (
-              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1.5rem", background: "rgba(255,255,255,0.03)", padding: "0.6rem 1rem", borderRadius: "1rem" }}>
-                <span style={{ color: "#f1c40f", fontSize: "1.2rem" }}>★</span>
-                <strong style={{ fontSize: "1.1rem" }}>{selectedMarker.rating}</strong>
-                <span style={{ opacity: 0.5, fontSize: "0.8rem" }}>({selectedMarker.user_ratings_total?.toLocaleString()} avaliações)</span>
-              </div>
-            )}
-
-            <div style={{ marginBottom: "1.5rem" }}>
-              <p style={{ fontSize: "0.95rem", lineHeight: 1.6, opacity: 0.9, whiteSpace: "pre-wrap", color: "rgba(255,255,255,0.9)" }}>
-                {selectedMarker.editorial_note || selectedMarker.summary || "Explora as maravilhas deste local único selecionado estrategicamente para sua viagem."}
-              </p>
-            </div>
+            <p style={{ fontSize: "0.88rem", lineHeight: 1.6, opacity: 0.85, marginBottom: "1.25rem" }}>
+              {selectedMarker.editorial_note || selectedMarker.summary}
+            </p>
 
             {selectedMarker.curator_reasoning && (
-              <div style={{ 
-                marginBottom: "1.5rem", padding: "1.2rem", 
-                background: "rgba(0, 255, 65, 0.05)", 
-                borderRadius: "1rem", 
-                borderLeft: "4px solid var(--primary)",
-                boxShadow: "inset 0 0 20px rgba(0,255,65,0.02)"
+              <div style={{
+                marginBottom: "1.25rem", padding: "1rem",
+                background: "rgba(0,229,255,0.05)", borderRadius: "1rem",
+                borderLeft: "3px solid #00e5ff"
               }}>
-                <strong style={{ display: "block", color: "var(--primary)", fontSize: "0.7rem", textTransform: "uppercase", marginBottom: "0.5rem", letterSpacing: "1px", fontWeight: 800 }}>
+                <strong style={{ display: "block", color: "#00e5ff", fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "0.4rem" }}>
                   Por que indicamos?
                 </strong>
-                <p style={{ margin: 0, fontSize: "0.85rem", opacity: 0.9, fontStyle: "italic", lineHeight: 1.5 }}>
+                <p style={{ margin: 0, fontSize: "0.82rem", opacity: 0.85, fontStyle: "italic", lineHeight: 1.5 }}>
                   "{selectedMarker.curator_reasoning}"
                 </p>
               </div>
             )}
 
             {selectedMarker.address_full && (
-               <div style={{ marginBottom: "1rem", fontSize: "0.85rem", opacity: 0.7, display: "flex", gap: "0.8rem", alignItems: "flex-start" }}>
-                  <span style={{ fontSize: "1.1rem" }}>📍</span>
-                  <span style={{ lineHeight: 1.4 }}>{selectedMarker.address_full}</span>
-               </div>
+              <div style={{ marginBottom: "0.9rem", fontSize: "0.82rem", opacity: 0.6, display: "flex", gap: "0.6rem" }}>
+                <span>📍</span><span style={{ lineHeight: 1.4 }}>{selectedMarker.address_full}</span>
+              </div>
             )}
 
             {selectedMarker.website && (
-              <a href={selectedMarker.website} target="_blank" rel="noreferrer" style={{ 
-                display: "inline-flex", alignItems: "center", gap: "0.5rem", marginBottom: "1.5rem", 
-                color: "var(--primary)", fontSize: "0.9rem", textDecoration: "none", fontWeight: 600,
-                borderBottom: "1px dashed var(--primary)", paddingBottom: "2px"
+              <a href={selectedMarker.website} target="_blank" rel="noreferrer" style={{
+                display: "inline-flex", alignItems: "center", gap: "0.4rem", marginBottom: "1.25rem",
+                color: "#00e5ff", fontSize: "0.85rem", textDecoration: "none", fontWeight: 600
               }}>
-                🌐 Visitar Website
+                🌐 Visitar Website →
               </a>
             )}
 
             {selectedMarker.start_time && (
-              <div style={{ 
-                marginTop: "0.5rem", padding: "1rem 1.5rem", 
-                background: "rgba(0,255,65,0.1)", 
-                borderRadius: "1.2rem",
-                display: "flex", justifyContent: "space-between", alignItems: "center"
+              <div style={{
+                padding: "0.9rem 1.25rem", background: "rgba(0,229,255,0.08)",
+                borderRadius: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center",
+                border: "1px solid rgba(0,229,255,0.15)"
               }}>
                 <div>
-                  <strong style={{ display: "block", color: "#00ff41", fontSize: "0.65rem", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "0.2rem" }}>Horário Previsto</strong>
-                  <span style={{ fontSize: "1.4rem", fontWeight: 700 }}>{selectedMarker.start_time}</span>
+                  <strong style={{ display: "block", color: "#00e5ff", fontSize: "0.6rem", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "0.2rem" }}>Horário Previsto</strong>
+                  <span style={{ fontSize: "1.4rem", fontWeight: 800 }}>{selectedMarker.start_time}</span>
                 </div>
-                <div style={{ opacity: 0.3, fontSize: "1.5rem" }}>🕒</div>
+                <span style={{ opacity: 0.25, fontSize: "1.5rem" }}>🕒</span>
               </div>
             )}
+
+            {/* Chat shortcut from place panel */}
+            <button
+              onClick={() => {
+                setChatInput(`Substitua "${selectedMarker.title}" por uma opção similar`);
+                setSelectedPlaceId(null);
+                setChatOpen(true);
+              }}
+              style={{
+                marginTop: "0.9rem", width: "100%", padding: "0.7rem",
+                background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                borderRadius: "0.9rem", color: "rgba(255,255,255,0.6)", cursor: "pointer",
+                fontSize: "0.78rem", transition: "all 0.2s ease"
+              }}
+              onMouseOver={(e) => { e.currentTarget.style.background = "rgba(0,229,255,0.08)"; e.currentTarget.style.color = "#00e5ff"; }}
+              onMouseOut={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.04)"; e.currentTarget.style.color = "rgba(255,255,255,0.6)"; }}
+            >
+              💬 Pedir substituição ao assistente
+            </button>
           </div>
         </div>
       )}
@@ -301,38 +653,46 @@ export function TripPlanner({ tripId }: Props) {
       {/* DECISION OVERLAY */}
       {workspace.decisions.length > 0 && !isAgentThinking && (
         <div style={{
-           position: "absolute", inset: 0, zIndex: 100, background: "rgba(15, 23, 42, 0.9)", backdropFilter: "blur(10px)",
-           display: "flex", alignItems: "center", justifyContent: "center"
+          position: "absolute", inset: 0, zIndex: 100,
+          background: "rgba(10, 15, 30, 0.92)", backdropFilter: "blur(12px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          animation: "fadeIn 0.3s ease"
         }}>
-           <div style={{ 
-             background: "rgba(30, 41, 59, 0.8)", padding: "3rem", borderRadius: "2rem", maxWidth: "500px", 
-             textAlign: "center", border: "1px solid rgba(255, 255, 255, 0.1)",
-             boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.5)"
-           }}>
-             <h2 style={{ fontSize: "1.8rem", fontWeight: 800, marginBottom: "1rem" }}>Decisão Necessária</h2>
-             <p style={{ fontSize: "1.1rem", marginBottom: "0.5rem" }}>{workspace.decisions[0].title}</p>
-             <p style={{ opacity: 0.7, fontSize: "0.95rem", marginBottom: "2rem", lineHeight: 1.6 }}>{workspace.decisions[0].summary}</p>
-             <div style={{ display: "flex", gap: "1rem", justifyContent: "center" }}>
-                {workspace.decisions[0].options_json.map(opt => (
-                  <button key={opt.id as string} 
-                    onClick={async () => {
-                      await api.decideWorkflow(tripId, workspace.decisions[0].id, { action: opt.id === "approve" ? "approve" : "reject" });
-                      loadWorkspace();
-                    }}
-                    style={{
-                      padding: "1rem 2rem", borderRadius: "1rem", border: "none", cursor: "pointer", 
-                      fontSize: "1rem", fontWeight: 700, transition: "transform 0.2s, background 0.2s",
-                      background: opt.id === "approve" ? "var(--primary)" : "rgba(255,255,255,0.1)",
-                      color: opt.id === "approve" ? "black" : "white"
-                    }}
-                    onMouseOver={e => e.currentTarget.style.transform = "scale(1.05)"}
-                    onMouseOut={e => e.currentTarget.style.transform = "scale(1)"}
-                  >
-                    {opt.label as string}
-                  </button>
-                ))}
-             </div>
-           </div>
+          <div style={{
+            background: "rgba(20, 30, 50, 0.9)", padding: "2.5rem", borderRadius: "2rem",
+            maxWidth: "480px", width: "90%", textAlign: "center",
+            border: "1px solid rgba(255,255,255,0.1)",
+            boxShadow: "0 30px 60px -12px rgba(0,0,0,0.6)",
+            animation: "fadeSlideUp 0.3s ease both"
+          }}>
+            <div style={{ fontSize: "2.5rem", marginBottom: "1rem" }}>🤔</div>
+            <h2 style={{ fontSize: "1.6rem", fontWeight: 800, marginBottom: "0.75rem" }}>Decisão Necessária</h2>
+            <p style={{ fontSize: "1rem", marginBottom: "0.4rem", fontWeight: 600 }}>{workspace.decisions[0].title}</p>
+            <p style={{ opacity: 0.65, fontSize: "0.9rem", marginBottom: "2rem", lineHeight: 1.6 }}>{workspace.decisions[0].summary}</p>
+            <div style={{ display: "flex", gap: "0.8rem", justifyContent: "center" }}>
+              {workspace.decisions[0].options_json.map((opt) => (
+                <button
+                  key={opt.id as string}
+                  onClick={async () => {
+                    await api.decideWorkflow(tripId, workspace.decisions[0].id, {
+                      action: opt.id === "approve" ? "approve" : "reject",
+                    });
+                    loadWorkspace();
+                  }}
+                  style={{
+                    padding: "0.9rem 2rem", borderRadius: "1rem", border: "none", cursor: "pointer",
+                    fontSize: "0.95rem", fontWeight: 700, transition: "transform 0.2s, opacity 0.2s",
+                    background: opt.id === "approve" ? "#00e5ff" : "rgba(255,255,255,0.08)",
+                    color: opt.id === "approve" ? "#000" : "white"
+                  }}
+                  onMouseOver={(e) => { e.currentTarget.style.transform = "scale(1.05)"; }}
+                  onMouseOut={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
+                >
+                  {opt.label as string}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </main>

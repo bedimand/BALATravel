@@ -99,40 +99,6 @@ class TravelProvider:
         except Exception as exc:
             raise ProviderIntegrationError("SerpApi request failed.") from exc
 
-    def _location_to_iata(self, location: str) -> str:
-        text = location.strip()
-        if len(text) == 3 and text.isalpha():
-            return text.upper()
-        normalized = _normalize_text(text)
-        city_map = {
-            "rio de janeiro": "GIG",
-            "sao paulo": "GRU",
-            "sao paulo sp": "GRU",
-            "salvador": "SSA",
-            "recife": "REC",
-            "fortaleza": "FOR",
-            "brasilia": "BSB",
-            "curitiba": "CWB",
-            "porto alegre": "POA",
-            "florianopolis": "FLN",
-            "belo horizonte": "CNF",
-        }
-        return city_map.get(normalized, text[:3].upper())
-
-    def _trip_origin_iata(self, trip: Trip) -> str:
-        origin_city = str(getattr(trip, "origin_city", "") or "").strip()
-        if origin_city:
-            return self._location_to_iata(origin_city)
-
-        legacy_origin = str(getattr(trip, "origin_iata", "") or "").strip().upper()
-        if len(legacy_origin) == 3 and legacy_origin.isalpha():
-            return legacy_origin
-        raise ProviderIntegrationError("Trip origin city is missing. Set origin_city before running flight search.")
-
-    def _trip_currency(self, trip: Trip) -> str:
-        currency = str(getattr(trip, "currency", "") or "").strip().upper()
-        return currency if len(currency) == 3 and currency.isalpha() else "BRL"
-
     def _trip_locale(self, trip: Trip) -> str:
         locale = str(getattr(trip, "locale", "") or "").strip()
         return locale or "pt-BR"
@@ -143,123 +109,6 @@ class TravelProvider:
         language = parts[0].lower() if parts and parts[0] else "pt"
         country = parts[1].lower() if len(parts) > 1 and parts[1] else "br"
         return country, f"{language}-{country.upper()}"
-
-    def search_flights(self, trip: Trip) -> list[dict]:
-        trip_currency = self._trip_currency(trip)
-        trip_gl, trip_hl = self._trip_gl_hl(trip)
-        trip_origin_iata = self._trip_origin_iata(trip)
-        payload = self._serpapi_request(
-            {
-                "engine": "google_flights",
-                "departure_id": trip_origin_iata,
-                "arrival_id": self._location_to_iata(trip.destination),
-                "outbound_date": trip.start_date.isoformat(),
-                "currency": trip_currency,
-                "hl": trip_hl,
-                "gl": trip_gl,
-                "adults": 1,
-                "type": 2,
-            }
-        )
-        offers = [*(payload.get("best_flights") or []), *(payload.get("other_flights") or [])]
-        if not offers:
-            raise ProviderIntegrationError("No live flight offers returned by SerpApi.")
-
-        search_link = payload.get("search_metadata", {}).get("google_flights_url")
-        fetched_at = datetime.now(UTC)
-        results = []
-        for offer in offers[: settings.serpapi_max_results]:
-            segments = offer.get("flights") or []
-            if not segments:
-                continue
-            first_leg = segments[0]
-            last_leg = segments[-1]
-            results.append(
-                {
-                    "provider_ref": _first_value(offer.get("booking_token"), offer.get("departure_token"), fallback=f"FLT-{trip.id}-{len(results)}"),
-                    "price": _safe_decimal(offer.get("price"), "0.00"),
-                    "currency": trip_currency,
-                    "legs_json": [
-                        {
-                            "departure_airport": _first_value((first_leg.get("departure_airport") or {}).get("id"), trip_origin_iata),
-                            "departure_time": _first_value((first_leg.get("departure_airport") or {}).get("time"), ""),
-                            "arrival_airport": _first_value((last_leg.get("arrival_airport") or {}).get("id"), ""),
-                            "arrival_time": _first_value((last_leg.get("arrival_airport") or {}).get("time"), ""),
-                        }
-                    ],
-                    "baggage_summary": "Consulte detalhes na oferta",
-                    "deeplink": _first_value(search_link, "https://www.google.com/travel/flights"),
-                    "source": self.source,
-                    "confidence": 0.93,
-                    "fetched_at": fetched_at,
-                }
-            )
-        if not results:
-            raise ProviderIntegrationError("SerpApi returned flight payload without usable segments.")
-        return results
-
-    def search_hotels(self, trip: Trip) -> list[dict]:
-        trip_currency = self._trip_currency(trip)
-        trip_gl, trip_hl = self._trip_gl_hl(trip)
-        payload = self._serpapi_request(
-            {
-                "engine": "google_hotels",
-                "q": trip.destination,
-                "check_in_date": trip.start_date.isoformat(),
-                "check_out_date": trip.end_date.isoformat(),
-                "adults": 1,
-                "currency": trip_currency,
-                "hl": trip_hl,
-                "gl": trip_gl,
-            }
-        )
-        hotels = payload.get("properties") or []
-        if not hotels:
-            raise ProviderIntegrationError("No live hotel offers returned by SerpApi.")
-
-        trip_days = max((trip.end_date - trip.start_date).days, 1)
-        fetched_at = datetime.now(UTC)
-        results = []
-        for hotel in hotels[: settings.serpapi_max_results]:
-            gps = hotel.get("gps_coordinates") or {}
-            nightly = _safe_decimal(
-                _first_value(
-                    (hotel.get("rate_per_night") or {}).get("lowest"),
-                    hotel.get("extracted_rate"),
-                ),
-                "0.00",
-            )
-            total = _safe_decimal(
-                _first_value(
-                    (hotel.get("total_rate") or {}).get("lowest"),
-                    nightly * trip_days,
-                ),
-                "0.00",
-            )
-            hotel_name = _first_value(hotel.get("name"), fallback="Hotel")
-            deeplink = _first_value(
-                hotel.get("link"),
-                hotel.get("serpapi_property_details_link"),
-                fallback=f"https://www.google.com/travel/hotels?q={quote_plus(str(hotel_name))}",
-            )
-            results.append(
-                {
-                    "provider_ref": _first_value(hotel.get("property_token"), hotel.get("name"), fallback=f"HTL-{trip.id}-{len(results)}"),
-                    "name": hotel_name,
-                    "nightly_price": nightly,
-                    "total_price": total,
-                    "rating": float(_first_value(hotel.get("overall_rating"), hotel.get("rating"), fallback=4.0)),
-                    "lat": float(_first_value(gps.get("latitude"), fallback=0.0)),
-                    "lng": float(_first_value(gps.get("longitude"), fallback=0.0)),
-                    "deeplink": deeplink,
-                    "source": self.source,
-                    "confidence": 0.92,
-                    "fetched_at": fetched_at,
-                }
-            )
-        if not results:
-            raise ProviderIntegrationError("SerpApi returned hotel payload without usable records.")
-        return results
 
     def search_places_by_interest(self, trip: Trip, query: str, max_results: int = 20, center_lat: float | None = None, center_lng: float | None = None) -> list[dict]:
         """
@@ -337,22 +186,6 @@ class TravelProvider:
                 "fetched_at": fetched_at,
             })
         return results
-
-    def get_place_photos(self, google_place_id: str) -> list[str]:
-        """Retrieves an array of photo URLs for a given Google Place ID via SerpAPI."""
-        if not google_place_id:
-            return []
-        params = {
-            "engine": "google_maps_photos",
-            "data_id": google_place_id,
-        }
-        try:
-            # We don't want a failing photo fetching request to break the tool
-            payload = self._serpapi_request(params)
-            photos = payload.get("photos", [])
-            return [str(photo.get("image")) for photo in photos if photo.get("image")][:10]
-        except Exception:
-            return []
 
     def _opentripmap_request(self, path: str, params: dict[str, Any]) -> Any:
         if not settings.opentripmap_api_key:

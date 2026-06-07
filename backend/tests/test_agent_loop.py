@@ -41,13 +41,20 @@ def test_agent_loop_calls_tools_and_finishes(client: TestClient, monkeypatch):
 
     monkeypatch.setattr("app.services.central_mind.llm_chat", fake_llm_chat)
 
+    # The endpoint dispatches the agent in the background and returns 202; the
+    # conftest fixture runs that work inline, so by the time we get the response
+    # the run has completed. We read the result from the agent thread.
     resp = client.post(f"/api/trips/{trip_id}/agent/messages", json={"message": "O que temos?"})
 
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["assistant_message"]
-    assert data["run_id"] is not None
+    assert resp.status_code == 202
+    assert resp.json()["run_id"] is not None
     assert call_count["n"] >= 2
+
+    thread = client.get(f"/api/trips/{trip_id}/agent/thread")
+    assert thread.status_code == 200
+    runs = thread.json()["runs"]
+    assert runs
+    assert any(run["assistant_message"] for run in runs)
 
 
 def test_agent_loop_terminates_on_consecutive_errors(client: TestClient, monkeypatch):
@@ -64,6 +71,13 @@ def test_agent_loop_terminates_on_consecutive_errors(client: TestClient, monkeyp
 
     resp = client.post(f"/api/trips/{trip_id}/agent/messages", json={"message": "Faz algo"})
 
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "erros consecutivos" in data["assistant_message"].lower() or data["assistant_message"]
+    # 202 + inline execution (see conftest). The agent should terminate on the
+    # consecutive-error guard rather than looping forever.
+    assert resp.status_code == 202
+    assert resp.json()["run_id"] is not None
+
+    thread = client.get(f"/api/trips/{trip_id}/agent/thread")
+    assert thread.status_code == 200
+    runs = thread.json()["runs"]
+    assert runs
+    assert any(run["assistant_message"] for run in runs)

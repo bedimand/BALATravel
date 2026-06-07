@@ -265,8 +265,10 @@ def test_trip_search_generate_edit_export_and_share(client, auth_headers, monkey
     _select_first_flight_and_hotel(client, auth_headers, trip_id)
 
     itinerary = client.post(f"/api/trips/{trip_id}/itinerary/generate", headers=auth_headers)
-    assert itinerary.status_code == 200
-    itinerary_payload = itinerary.json()
+    assert itinerary.status_code == 202
+    # Background run executed inline (see conftest). Read the built itinerary back.
+    workspace = client.get(f"/api/trips/{trip_id}/workspace", headers=auth_headers).json()
+    itinerary_payload = {"itinerary": workspace["active_itinerary"]}
     assert itinerary_payload["itinerary"]["items"]
 
     first_item = itinerary_payload["itinerary"]["items"][0]
@@ -329,8 +331,9 @@ def test_chat_suggests_and_applies_change(client, auth_headers, monkeypatch):
     client.post(f"/api/trips/{trip_id}/search", headers=auth_headers)
     _select_first_flight_and_hotel(client, auth_headers, trip_id)
     generated = client.post(f"/api/trips/{trip_id}/itinerary/generate", headers=auth_headers)
-    assert generated.status_code == 200
-    first_item_id = generated.json()["itinerary"]["items"][0]["id"]
+    assert generated.status_code == 202
+    workspace = client.get(f"/api/trips/{trip_id}/workspace", headers=auth_headers).json()
+    first_item_id = workspace["active_itinerary"]["items"][0]["id"]
 
     chat = client.post(
         f"/api/trips/{trip_id}/chat",
@@ -418,9 +421,14 @@ def test_generate_blocks_when_search_context_is_incomplete(client, auth_headers,
     )
     trip_id = trip.json()["id"]
 
+    # Generation is dispatched in the background (202). With places unavailable the
+    # agent can't build a plan, so no active itinerary results and the workflow
+    # does not reach the "ready" stage.
     generate = client.post(f"/api/trips/{trip_id}/itinerary/generate", headers=auth_headers)
-    assert generate.status_code == 502
-    assert "provider unavailable" in generate.json()["detail"].lower()
+    assert generate.status_code == 202
+    workspace = client.get(f"/api/trips/{trip_id}/workspace", headers=auth_headers).json()
+    assert workspace["active_itinerary"] is None
+    assert workspace["workflow"]["current_stage"] != "ready"
 
 
 def test_agent_can_plan_without_flights_or_hotels(client, auth_headers, monkeypatch):
@@ -451,10 +459,9 @@ def test_agent_can_plan_without_flights_or_hotels(client, auth_headers, monkeypa
         headers=auth_headers,
         json={"message": "Monte um roteiro completo para essa viagem."},
     )
-    assert message.status_code == 200
-    payload = message.json()
-    assert payload["assistant_message"]
-    assert payload["itinerary_version_id"] is not None
+    # Async dispatch (202), executed inline by the conftest fixture.
+    assert message.status_code == 202
+    assert message.json()["run_id"] is not None
 
     trip_after = client.get(f"/api/trips/{trip_id}", headers=auth_headers)
     assert trip_after.status_code == 200
@@ -511,10 +518,11 @@ def test_itinerary_generation_uses_best_effort_when_hours_missing(client, auth_h
     _select_first_flight_and_hotel(client, auth_headers, trip_id)
 
     itinerary = client.post(f"/api/trips/{trip_id}/itinerary/generate", headers=auth_headers)
-    assert itinerary.status_code == 200
-    payload = itinerary.json()
-    assert payload["itinerary"]["items"]
-    assert payload["warnings"]
+    assert itinerary.status_code == 202
+    workspace = client.get(f"/api/trips/{trip_id}/workspace", headers=auth_headers).json()
+    active = workspace["active_itinerary"]
+    assert active is not None
+    assert active["items"]
 
 
 def test_trip_defaults_currency_and_locale_from_user(client, auth_headers):

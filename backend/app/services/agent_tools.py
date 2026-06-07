@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, time as dt_time, timedelta
-from decimal import Decimal
+from datetime import UTC, date as dt_date, datetime, time as dt_time, timedelta
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -11,16 +10,13 @@ from sqlalchemy.orm import Session
 from app.models.entities import (
     AgentRun,
     AgentToolCall,
-    FlightOption,
-    HotelOption,
     ItineraryItem,
     ItineraryVersion,
     Place,
     PlanMutation,
     Trip,
 )
-from app.services.llm import LLMIntegrationError
-from app.services.providers import ProviderIntegrationError, get_travel_provider, replace_places
+from app.services.providers import get_travel_provider, replace_places
 
 
 provider = get_travel_provider()
@@ -28,14 +24,6 @@ provider = get_travel_provider()
 
 def get_active_itinerary(trip: Trip) -> ItineraryVersion | None:
     return next((version for version in reversed(trip.itinerary_versions) if version.status == "active"), None)
-
-
-def get_planning_blockers(trip: Trip, places: list[Place] | None = None) -> list[str]:
-    blockers: list[str] = []
-    loaded_places = places if places is not None else []
-    if not loaded_places:
-        blockers.append("place options")
-    return blockers
 
 
 def serialize_itinerary(version: ItineraryVersion | None) -> dict[str, Any] | None:
@@ -71,7 +59,6 @@ def serialize_trip_snapshot(trip: Trip, places: list[Place] | None = None) -> di
     return {
         "trip_id": trip.id,
         "destination": trip.destination,
-        "origin_city": trip.origin_city,
         "currency": trip.currency,
         "locale": trip.locale,
         "start_date": trip.start_date.isoformat(),
@@ -79,11 +66,7 @@ def serialize_trip_snapshot(trip: Trip, places: list[Place] | None = None) -> di
         "budget": str(trip.budget),
         "style": trip.style,
         "interests": list(trip.interests),
-        "flight_count": len(trip.flights),
-        "hotel_count": len(trip.hotels),
         "place_count": len(places_payload) if places_payload else 0,
-        "selected_flight_id": trip.selected_flight_id,
-        "selected_hotel_id": trip.selected_hotel_id,
         "active_itinerary": serialize_itinerary(active),
     }
 
@@ -173,28 +156,6 @@ def create_mutated_itinerary_version(
     return cloned, item_map, mutation
 
 
-def _replace_flights(db: Session, trip: Trip, payloads: list[dict[str, Any]]) -> list[FlightOption]:
-    db.execute(delete(FlightOption).where(FlightOption.trip_id == trip.id))
-    db.flush()
-    trip.selected_flight_id = None
-    rows = [FlightOption(trip_id=trip.id, **payload) for payload in payloads]
-    db.add_all(rows)
-    db.commit()
-    db.expire(trip, ["flights"])
-    return rows
-
-
-def _replace_hotels(db: Session, trip: Trip, payloads: list[dict[str, Any]]) -> list[HotelOption]:
-    db.execute(delete(HotelOption).where(HotelOption.trip_id == trip.id))
-    db.flush()
-    trip.selected_hotel_id = None
-    rows = [HotelOption(trip_id=trip.id, **payload) for payload in payloads]
-    db.add_all(rows)
-    db.commit()
-    db.expire(trip, ["hotels"])
-    return rows
-
-
 def _replace_places(db: Session, trip: Trip, payloads: list[dict[str, Any]]) -> list[Place]:
     existing_selection = {
         row.external_id: row.is_selected
@@ -218,36 +179,6 @@ def _replace_places(db: Session, trip: Trip, payloads: list[dict[str, Any]]) -> 
     return list(db.scalars(select(Place).where(Place.trip_id == trip.id).order_by(Place.rating.desc())))
 
 
-def tool_search_flights(db: Session, trip: Trip) -> dict[str, Any]:
-    payloads = provider.search_flights(trip)
-    rows = _replace_flights(db, trip, payloads)
-    return {"count": len(rows), "currency": rows[0].currency if rows else trip.currency}
-
-
-def tool_search_hotels(db: Session, trip: Trip) -> dict[str, Any]:
-    payloads = provider.search_hotels(trip)
-    rows = _replace_hotels(db, trip, payloads)
-    cheapest = min((row.total_price for row in rows), default=Decimal("0.00"))
-    return {"count": len(rows), "cheapest_total": str(cheapest)}
-
-
-def tool_search_places(db: Session, trip: Trip) -> dict[str, Any]:
-    payloads = provider.search_places(trip)
-    rows = _replace_places(db, trip, payloads)
-    return {"count": len(rows), "top_place": rows[0].name if rows else None}
-
-
-def tool_search_all(db: Session, trip: Trip) -> tuple[dict[str, Any], list[str]]:
-    try:
-        result = {
-            "flights": tool_search_flights(db, trip)["count"],
-            "hotels": tool_search_hotels(db, trip)["count"],
-            "places": tool_search_places(db, trip)["count"],
-        }
-    except ProviderIntegrationError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-
-    return result, []
 
 
 
@@ -348,9 +279,12 @@ def tool_insert_item(
         start_time = dt_time.fromisoformat(start_time)
     if isinstance(end_time, str):
         end_time = dt_time.fromisoformat(end_time)
+    item_date = payload["date"]
+    if isinstance(item_date, str):
+        item_date = dt_date.fromisoformat(item_date)
     new_item = ItineraryItem(
         itinerary_version_id=cloned.id,
-        date=payload["date"],
+        date=item_date,
         start_time=start_time,
         end_time=end_time,
         item_type=str(payload.get("item_type", "custom"))[:30],
@@ -375,37 +309,115 @@ def tool_insert_item(
     return cloned, mutation
 
 
-def tool_reorder_day(
+def tool_set_day(
     db: Session,
     trip: Trip,
     date_text: str,
+    items: list[dict[str, Any]],
     rationale: str,
     run: AgentRun | None = None,
 ) -> tuple[ItineraryVersion, PlanMutation]:
+    """Declarative full-day replacement. The agent decides the entire day —
+    order, times, which activities — and passes it as `items`. This tool does NOT
+    reorder, reschedule, or invent times; it validates the agent's plan and
+    persists it, recomputing only the travel time between consecutive stops.
+
+    Each entry in `items`:
+      {title, start_time "HH:MM", end_time "HH:MM", item_type?, lat?, lng?, notes?, place_ref?}
+
+    Items from other days are left untouched; the named day is fully replaced.
+    """
     active = get_active_itinerary(trip)
     if not active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Active itinerary not found")
 
-    cloned, _, mutation = create_mutated_itinerary_version(db, trip, active, "reorder_day", rationale, run=run)
-    day_items = [row for row in cloned.items if row.date.isoformat() == date_text]
-    if not day_items:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No itinerary items found for the requested day.")
+    try:
+        day = dt_date.fromisoformat(date_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid date: {date_text}. Use YYYY-MM-DD.") from exc
 
-    anchor = datetime.combine(day_items[0].date, trip.daily_start_time)
+    if not items:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="set_day requires at least one item.")
+
+    # Parse + validate every item before mutating anything.
+    parsed: list[dict[str, Any]] = []
+    for idx, raw in enumerate(items):
+        title = str(raw.get("title", "")).strip()
+        if not title:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Item {idx} is missing a title.")
+        try:
+            start_time = dt_time.fromisoformat(str(raw["start_time"]))
+            end_time = dt_time.fromisoformat(str(raw["end_time"]))
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Item '{title}' has invalid start_time/end_time (use HH:MM).") from exc
+        if end_time <= start_time:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Item '{title}': end_time must be after start_time.")
+        parsed.append({
+            "title": title[:120],
+            "start_time": start_time,
+            "end_time": end_time,
+            "item_type": str(raw.get("item_type", "custom"))[:30],
+            "lat": raw.get("lat"),
+            "lng": raw.get("lng"),
+            "notes": (str(raw.get("notes", "") or "")[:500] or None),
+            "place_ref": raw.get("place_ref"),
+        })
+
+    parsed.sort(key=lambda r: r["start_time"])
+    for a, b in zip(parsed, parsed[1:]):
+        if b["start_time"] < a["end_time"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Overlapping items: '{a['title']}' ends after '{b['title']}' starts.",
+            )
+
+    cloned, _, mutation = create_mutated_itinerary_version(db, trip, active, "set_day", rationale, run=run)
+
+    # Drop the existing items for this day; keep all other days intact.
+    for existing in [row for row in cloned.items if row.date == day]:
+        cloned.items.remove(existing)
+        db.delete(existing)
+
+    from app.services.routing import estimate_route, RoutingIntegrationError
+
     changed_ids: list[int] = []
-    for item in sorted(day_items, key=lambda row: (row.travel_time_min, row.start_time, row.id)):
-        duration = datetime.combine(item.date, item.end_time) - datetime.combine(item.date, item.start_time)
-        if duration <= timedelta():
-            duration = timedelta(minutes=90)
-        item.start_time = anchor.time().replace(second=0, microsecond=0)
-        item.end_time = (anchor + duration).time().replace(second=0, microsecond=0)
-        anchor = anchor + duration + timedelta(minutes=max(item.travel_time_min, 15))
-        db.add(item)
-        changed_ids.append(item.id)
+    prev_coords: tuple[float, float] | None = None
+    if trip.accommodation_lat and trip.accommodation_lng:
+        prev_coords = (trip.accommodation_lat, trip.accommodation_lng)
 
-    cloned.assistant_summary = f"{cloned.assistant_summary} Dia reorganizado: {rationale}".strip()
-    mutation.changed_item_ids = changed_ids
+    for entry in parsed:
+        travel_time_min = 0
+        travel_distance_km = 0.0
+        coords = (entry["lat"], entry["lng"]) if entry["lat"] and entry["lng"] else None
+        if coords and prev_coords:
+            try:
+                route = estimate_route(db, trip, prev_coords, coords)
+                travel_time_min = route.duration_min
+                travel_distance_km = route.distance_km
+            except RoutingIntegrationError:
+                pass
+        new_item = ItineraryItem(
+            date=day,
+            start_time=entry["start_time"],
+            end_time=entry["end_time"],
+            item_type=entry["item_type"],
+            title=entry["title"],
+            place_ref=entry["place_ref"],
+            lat=entry["lat"],
+            lng=entry["lng"],
+            travel_time_min=travel_time_min,
+            travel_distance_km=travel_distance_km,
+            notes=entry["notes"],
+        )
+        cloned.items.append(new_item)
+        if coords:
+            prev_coords = coords
+
+    cloned.assistant_summary = f"{cloned.assistant_summary} Dia {date_text} redefinido: {rationale}".strip()
     db.add(cloned)
+    db.flush()
+    changed_ids = [item.id for item in cloned.items if item.date == day]
+    mutation.changed_item_ids = changed_ids
     db.add(mutation)
     db.commit()
     db.refresh(cloned)
@@ -437,9 +449,6 @@ def tool_rollback_to_version(
 def tool_list_current_options(db: Session, trip: Trip) -> dict[str, Any]:
     places = list(db.scalars(select(Place).where(Place.trip_id == trip.id).order_by(Place.rating.desc())))
     return {
-        "flights": len(trip.flights),
-        "hotels": len(trip.hotels),
         "places": len(places),
-        "top_hotel": trip.hotels[0].name if trip.hotels else None,
         "top_place": places[0].name if places else None,
     }

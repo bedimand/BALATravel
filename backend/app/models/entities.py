@@ -44,10 +44,6 @@ class Trip(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     destination: Mapped[str] = mapped_column(String(120))
-    origin_city: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    origin_iata: Mapped[str | None] = mapped_column(String(3), nullable=True)
-    selected_flight_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    selected_hotel_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     currency: Mapped[str] = mapped_column(String(3), default="BRL")
     locale: Mapped[str] = mapped_column(String(10), default="pt-BR")
     start_date: Mapped[date] = mapped_column(Date)
@@ -75,8 +71,6 @@ class Trip(Base):
     languages: Mapped[list[str]] = mapped_column(JSON, default=list)
 
     user: Mapped["User"] = relationship(back_populates="trips")
-    flights: Mapped[list["FlightOption"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
-    hotels: Mapped[list["HotelOption"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
     places: Mapped[list["Place"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
     itinerary_versions: Mapped[list["ItineraryVersion"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
     notifications: Mapped[list["Notification"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
@@ -94,44 +88,6 @@ class Trip(Base):
     artifacts: Mapped[list["AgentArtifact"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
     weather_snapshots: Mapped[list["TripWeatherSnapshot"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
     route_estimates: Mapped[list["RouteEstimateCache"]] = relationship(back_populates="trip", cascade="all, delete-orphan")
-
-
-class FlightOption(Base):
-    __tablename__ = "flight_options"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    trip_id: Mapped[int] = mapped_column(ForeignKey("trips.id"), index=True)
-    provider_ref: Mapped[str] = mapped_column(String(120))
-    price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
-    currency: Mapped[str] = mapped_column(String(3), default="BRL")
-    legs_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
-    baggage_summary: Mapped[str] = mapped_column(String(120))
-    deeplink: Mapped[str] = mapped_column(Text)
-    source: Mapped[str] = mapped_column(String(50))
-    confidence: Mapped[float] = mapped_column(default=0.95)
-    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-
-    trip: Mapped["Trip"] = relationship(back_populates="flights")
-
-
-class HotelOption(Base):
-    __tablename__ = "hotel_options"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    trip_id: Mapped[int] = mapped_column(ForeignKey("trips.id"), index=True)
-    provider_ref: Mapped[str] = mapped_column(String(120))
-    name: Mapped[str] = mapped_column(String(120))
-    nightly_price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
-    total_price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
-    rating: Mapped[float] = mapped_column(default=4.0)
-    lat: Mapped[float] = mapped_column()
-    lng: Mapped[float] = mapped_column()
-    deeplink: Mapped[str] = mapped_column(Text)
-    source: Mapped[str] = mapped_column(String(50))
-    confidence: Mapped[float] = mapped_column(default=0.92)
-    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-
-    trip: Mapped["Trip"] = relationship(back_populates="hotels")
 
 
 class Place(Base):
@@ -325,7 +281,7 @@ class TripWorkflowState(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     trip_id: Mapped[int] = mapped_column(ForeignKey("trips.id"), unique=True, index=True)
-    current_stage: Mapped[str] = mapped_column(String(60), default="trip_intake")
+    current_stage: Mapped[str] = mapped_column(String(60), default="planning")
     stage_status: Mapped[str] = mapped_column(String(20), default="idle")
     active_workflow_run_id: Mapped[int | None] = mapped_column(ForeignKey("workflow_runs.id"), nullable=True)
     last_user_goal: Mapped[str | None] = mapped_column(Text, nullable=True)

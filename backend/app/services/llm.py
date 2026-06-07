@@ -5,7 +5,7 @@ import time
 import httpx
 
 from app.core.config import get_settings
-from app.models.entities import HotelOption, Place, Trip
+from app.models.entities import Trip
 
 
 settings = get_settings()
@@ -124,18 +124,6 @@ def llm_chat(prompt: str | list[dict], system_prompt: str | None = None, tempera
                 break # Non-retryable error
     
     raise LLMIntegrationError(f"LLM exhausted all providers. Last error: {last_error}")
-
-
-def summarize_recommendations(trip: Trip, hotels: list[HotelOption], places: list[Place]) -> str:
-    top_places = ", ".join(place.name for place in places[:3]) if places else "atracoes locais"
-    prompt = (
-        "Resuma em 2 frases um plano de atividades para uma viagem.\n"
-        f"Destino: {trip.destination}\n"
-        f"Interesses: {', '.join(trip.interests) or 'exploracao geral'}\n"
-        f"Pontos sugeridos: {top_places}\n"
-        "Explique como os lugares escolhidos combinam com o ritmo da viagem."
-    )
-    return llm_chat(prompt)
 
 
 def summarize_itinerary(trip: Trip, days: int, warnings: list[str]) -> str:

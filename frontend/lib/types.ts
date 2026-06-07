@@ -75,7 +75,6 @@ export type WorkspaceResponse = {
   workflow_runs: WorkflowRun[];
   map: MapResponse;
   decisions: Decision[];
-  hotels: HotelOption[];
   itinerary_versions: ItineraryVersion[];
 };
 
@@ -110,37 +109,6 @@ export type MapResponse = {
       coordinates: number[][];
     };
   }>;
-};
-
-export type FlightLeg = {
-  departure_airport: string;
-  departure_time: string;
-  arrival_airport: string;
-  arrival_time: string;
-};
-
-export type FlightOption = {
-  id: number;
-  provider_ref: string;
-  price: number;
-  currency: string;
-  legs_json: FlightLeg[];
-  baggage_summary: string | null;
-  deeplink?: string;
-};
-
-export type HotelOption = {
-  id: number;
-  name: string;
-  address: string;
-  lat: number;
-  lng: number;
-  description: string | null;
-  rating: number | null;
-  price_per_night: number | null;
-  total_price: number | null;
-  deeplink?: string;
-  is_selected: boolean;
 };
 
 export type PlanResponse = {
@@ -228,15 +196,6 @@ export type Place = {
   summary: string | null;
   image_url: string | null;
   deeplink?: string;
-};
-
-export type SearchResponse = {
-  trip_id: number;
-  destination: string;
-  flights: Record<string, unknown>[];
-  hotels: Record<string, unknown>[];
-  places: Place[];
-  warnings: string[];
 };
 
 export type ItineraryResponse = {

@@ -16,11 +16,7 @@ from app.services.agent_tools import (
     finish_tool_call,
     get_active_itinerary,
     serialize_trip_snapshot,
-    tool_list_current_options,
-    tool_remove_item,
-    tool_reorder_day,
     tool_rollback_to_version,
-    tool_search_all,
     tool_update_item,
 )
 from app.services.central_mind import CentralMind
@@ -46,8 +42,6 @@ def _load_trip(db: Session, user: User, trip_id: int) -> Trip:
         select(Trip)
         .where(Trip.id == trip_id, Trip.user_id == user.id)
         .options(
-            selectinload(Trip.flights),
-            selectinload(Trip.hotels),
             selectinload(Trip.itinerary_versions).selectinload(ItineraryVersion.items),
             selectinload(Trip.agent_runs),
             selectinload(Trip.plan_mutations),
@@ -196,119 +190,6 @@ class AgentCoordinator:
             trip_snapshot=serialize_trip_snapshot(trip, places),
             itinerary_version_id=active.id if active else None,
             proposed_followups=["Posso continuar a partir desta versao restaurada."],
-        )
-
-    def search_trip(self, db: Session, trip_id: int) -> AgentExecutionResult:
-        trip = _load_trip(db, self.user, trip_id)
-        run = AgentRun(
-            trip_id=trip.id,
-            intent="search",
-            status="running",
-            user_message="Buscar opcoes para esta viagem.",
-            model="central_mind",
-            prompt_version=PROMPT_VERSION,
-            warnings=[],
-            applied_changes=[],
-        )
-        db.add(run)
-        db.commit()
-        db.refresh(run)
-
-        call = begin_tool_call(db, run, "search_all", {"trip_id": trip.id})
-        try:
-            result, search_warnings = tool_search_all(db, trip)
-            finish_tool_call(db, call, {"result": result})
-        except Exception as exc:
-            fail_tool_call(db, call, str(exc))
-            raise
-
-        trip = _refresh_trip(db, self.user, trip.id)
-        places = _load_places(db, trip.id)
-
-        run.status = "completed"
-        run.assistant_message = "Busquei novas opcoes de voo, hospedagem e lugares."
-        run.warnings = search_warnings
-        run.completed_at = datetime.now(UTC)
-        db.add(run)
-        db.commit()
-
-        return AgentExecutionResult(
-            run=run,
-            trip=trip,
-            warnings=search_warnings,
-            applied_changes=[],
-            trip_snapshot=serialize_trip_snapshot(trip, places),
-            itinerary_version_id=None,
-            proposed_followups=["Posso gerar ou replanejar o roteiro usando estas opcoes."],
-        )
-
-    def generate(self, db: Session, trip_id: int, intent: str = "generate") -> AgentExecutionResult:
-        trip = _load_trip(db, self.user, trip_id)
-        run = AgentRun(
-            trip_id=trip.id,
-            intent=intent,
-            status="running",
-            user_message="Gerar roteiro.",
-            model="central_mind",
-            prompt_version=PROMPT_VERSION,
-            warnings=[],
-            applied_changes=[],
-        )
-        db.add(run)
-        db.commit()
-        db.refresh(run)
-
-        warnings: list[str] = []
-        places = _load_places(db, trip.id)
-
-        from app.services.agent_tools import get_planning_blockers
-        if get_planning_blockers(trip, places):
-            call = begin_tool_call(db, run, "search_all", {"trip_id": trip.id})
-            try:
-                result, search_warnings = tool_search_all(db, trip)
-                finish_tool_call(db, call, {"result": result})
-                warnings.extend(search_warnings)
-            except Exception as exc:
-                fail_tool_call(db, call, str(exc))
-                raise
-            trip = _refresh_trip(db, self.user, trip.id)
-            places = _load_places(db, trip.id)
-
-        blockers = get_planning_blockers(trip, places)
-        if blockers:
-            detail = f"Cannot generate itinerary yet. Missing: {', '.join(blockers)}."
-            run.status = "completed"
-            run.assistant_message = detail
-            run.warnings = [*warnings, detail]
-            run.completed_at = datetime.now(UTC)
-            db.add(run)
-            db.commit()
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
-
-        mind = CentralMind(self.user)
-        mind.plan_trip(db, trip, run, log_step_fn=None)
-
-        trip = _refresh_trip(db, self.user, trip.id)
-        active = get_active_itinerary(trip)
-        places = _load_places(db, trip.id)
-
-        metadata = {"mutation_type": "plan_trip", "rationale": "Built by autonomous planning agent.", "itinerary_version_id": active.id if active else None}
-        run.status = "completed"
-        run.assistant_message = "Gerei um roteiro atualizado para esta viagem."
-        run.warnings = list(dict.fromkeys(warnings))
-        run.applied_changes = [metadata]
-        run.completed_at = datetime.now(UTC)
-        db.add(run)
-        db.commit()
-
-        return AgentExecutionResult(
-            run=run,
-            trip=trip,
-            warnings=run.warnings,
-            applied_changes=[metadata],
-            trip_snapshot=serialize_trip_snapshot(trip, places),
-            itinerary_version_id=active.id if active else None,
-            proposed_followups=["Posso otimizar um dia especifico ou reduzir custo com base neste roteiro."],
         )
 
     def _apply_proposed_change(

@@ -22,6 +22,32 @@ def reset_database():
     yield
 
 
+@pytest.fixture(autouse=True)
+def run_background_threads_inline(monkeypatch):
+    """Background work is dispatched via threading.Thread in the route handlers.
+    In tests we run it synchronously so the response reflects the completed work
+    and so a thread can't leak into the next test's DB teardown (the cause of the
+    'no such table' races). Endpoints still return 202; callers read the result
+    from the follow-up /workspace or response payload."""
+
+    class _InlineThread:
+        def __init__(self, target=None, args=(), kwargs=None, **_ignored):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            if self._target:
+                self._target(*self._args, **self._kwargs)
+
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr("app.api.routes.trips.threading.Thread", _InlineThread)
+    monkeypatch.setattr("app.api.routes.agent.threading.Thread", _InlineThread)
+    yield
+
+
 @pytest.fixture
 def client():
     with TestClient(app) as test_client:
@@ -67,37 +93,59 @@ def stub_non_search_external_services(monkeypatch):
         db.commit()
         return snapshots
 
-    _central_mind_step = {"n": 0}
+    _central_mind_state = {"finalized": False}
 
     def fake_central_mind_llm_chat(prompt, **kwargs):
-        """Returns agent tool-call JSON for the CentralMind loop."""
+        """Deterministic agent for the CentralMind loop, driven by the REAL state
+        the prompt reports (Places saved / Active itinerary), not by matching tool
+        names in the prompt — those always appear in the AVAILABLE TOOLS list, which
+        previously caused the mock to loop forever. The dates used here are derived
+        from the trip range parsed out of the prompt so place_item stays in-range."""
         import json as _json
-        prompt_text = _json.dumps(prompt) if isinstance(prompt, list) else prompt
-        _central_mind_step["n"] += 1
+        import re as _re
 
+        prompt_text = _json.dumps(prompt) if isinstance(prompt, list) else prompt
+
+        # First trip day, parsed from "Dates: YYYY-MM-DD to YYYY-MM-DD" in the prompt.
+        date_match = _re.search(r"Dates:\s*(\d{4}-\d{2}-\d{2})", prompt_text)
+        day = date_match.group(1) if date_match else "2026-01-01"
+
+        # 1. No places yet -> search.
         if "Places saved: 0" in prompt_text:
             return _json.dumps({
                 "reasoning": "Search for places.",
-                "tool_calls": [{"name": "search_places_general", "params": {}}],
+                "tool_calls": [{"name": "search_places", "params": {"query": f"top attractions"}}],
             })
-        if "Active itinerary: None" in prompt_text and "start_itinerary" not in prompt_text:
+
+        # 2. Places exist but no itinerary started -> start it.
+        if "Active itinerary: None" in prompt_text:
             return _json.dumps({
-                "reasoning": "Start itinerary and place items.",
+                "reasoning": "Start the itinerary.",
                 "tool_calls": [{"name": "start_itinerary", "params": {}}],
             })
-        if "start_itinerary" in prompt_text and "item_count" not in prompt_text:
+
+        active_match = _re.search(r"Active itinerary: Yes \(version \d+, (\d+) items\)", prompt_text)
+        item_count = int(active_match.group(1)) if active_match else 0
+
+        # 3. Itinerary started but empty -> place items (within the trip date range).
+        if item_count == 0:
             return _json.dumps({
                 "reasoning": "Place activities for the trip.",
                 "tool_calls": [
-                    {"name": "place_item", "params": {"title": "Cristo Redentor", "item_type": "tourist_attraction", "date": "2025-01-15", "start_time": "09:00", "end_time": "11:00", "lat": -22.9519, "lng": -43.2105}},
-                    {"name": "place_item", "params": {"title": "Copacabana", "item_type": "beach", "date": "2025-01-15", "start_time": "14:00", "end_time": "17:00", "lat": -22.9711, "lng": -43.1822}},
+                    {"name": "place_item", "params": {"title": "Cristo Redentor", "item_type": "tourist_attraction", "date": day, "start_time": "09:00", "end_time": "11:00", "lat": -22.9519, "lng": -43.2105}},
+                    {"name": "place_item", "params": {"title": "Copacabana", "item_type": "beach", "date": day, "start_time": "14:00", "end_time": "17:00", "lat": -22.9711, "lng": -43.1822}},
                 ],
             })
-        if "finalize_itinerary" not in prompt_text and "item_count" not in prompt_text and "Active itinerary: " in prompt_text:
+
+        # 4. Items placed but not yet finalized -> finalize once.
+        if not _central_mind_state["finalized"]:
+            _central_mind_state["finalized"] = True
             return _json.dumps({
                 "reasoning": "Finalize the itinerary.",
                 "tool_calls": [{"name": "finalize_itinerary", "params": {"summary": "Roteiro de teste."}}],
             })
+
+        # 5. Done.
         return _json.dumps({
             "reasoning": "Done.",
             "tool_calls": [{"name": "finish", "params": {"message": "Roteiro pronto."}}],
@@ -122,8 +170,13 @@ def stub_non_search_external_services(monkeypatch):
              "fetched_at": now, "summary": "Praia famosa.", "deeplink": "https://osm.org/"},
         ]
 
+    def fake_provider_search_by_interest(self, trip, query, max_results=20, center_lat=None, center_lng=None):
+        # Same canned places; the agent-facing search_places tool calls this.
+        return fake_provider_search_places(self, trip)[:max_results]
+
     monkeypatch.setattr("app.services.chat.llm_chat", fake_llm_chat)
     monkeypatch.setattr("app.services.central_mind.llm_chat", fake_central_mind_llm_chat)
     monkeypatch.setattr("app.services.routing.estimate_route", fake_estimate_route)
     monkeypatch.setattr("app.services.weather.refresh_trip_weather", fake_refresh_trip_weather)
     monkeypatch.setattr("app.services.providers.TravelProvider.search_places", fake_provider_search_places)
+    monkeypatch.setattr("app.services.providers.TravelProvider.search_places_by_interest", fake_provider_search_by_interest)

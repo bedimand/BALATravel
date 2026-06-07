@@ -41,14 +41,6 @@ def ensure_sqlite_schema() -> None:
             row[1]
             for row in connection.exec_driver_sql("PRAGMA table_info(trips)")
         }
-        if "origin_city" not in trip_columns:
-            connection.exec_driver_sql("ALTER TABLE trips ADD COLUMN origin_city VARCHAR(120)")
-        if "origin_iata" not in trip_columns:
-            connection.exec_driver_sql("ALTER TABLE trips ADD COLUMN origin_iata VARCHAR(3)")
-        if "selected_flight_id" not in trip_columns:
-            connection.exec_driver_sql("ALTER TABLE trips ADD COLUMN selected_flight_id INTEGER")
-        if "selected_hotel_id" not in trip_columns:
-            connection.exec_driver_sql("ALTER TABLE trips ADD COLUMN selected_hotel_id INTEGER")
         if "currency" not in trip_columns:
             connection.exec_driver_sql("ALTER TABLE trips ADD COLUMN currency VARCHAR(3) NOT NULL DEFAULT 'BRL'")
         if "locale" not in trip_columns:
