@@ -1,12 +1,13 @@
 # Render Blueprint for BALATravel — deploys BOTH the FastAPI backend and the
-# Next.js frontend as separate web services from this one repo.
+# Next.js frontend as separate web services from this one repo, on the FREE tier.
 # Deploy via: Render Dashboard > New > Blueprint > point at this repo.
 #
-# IMPORTANT — SQLite persistence:
-#   The backend mounts a persistent disk so the SQLite file survives redeploys.
-#   Render disks require a PAID instance (Starter, ~$7/mo); the free tier has
-#   ephemeral storage only. See DEPLOY.md for the free-tier fallback (data
-#   resets on each deploy — fine for a throwaway demo).
+# IMPORTANT — data is EPHEMERAL on the free tier:
+#   The free tier has no persistent disk, so the SQLite file lives in /tmp and is
+#   WIPED on every deploy/restart (and free services sleep after ~15 min idle).
+#   All accounts and trips reset. Fine for a demo. To keep data permanently, see
+#   DEPLOY.md (add a persistent disk on the paid Starter plan, or use a free
+#   hosted Postgres).
 
 services:
   # ---------------------------------------------------------------------------
@@ -15,21 +16,18 @@ services:
   - type: web
     name: balatravel-api
     runtime: python
-    plan: starter            # required for the persistent disk below; use `free` to drop the disk
+    plan: free
     rootDir: backend
     buildCommand: pip install .
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
-    disk:
-      name: balatravel-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: "3.12"
-      # SQLite living on the persistent disk (4 slashes = absolute path).
+      # Ephemeral SQLite in /tmp (free tier has no persistent disk; 4 slashes =
+      # absolute path). The schema auto-creates on boot, so this resets clean.
       - key: DATABASE_URL
-        value: sqlite:////var/data/balatravel.db
+        value: sqlite:////tmp/balatravel.db
       # Must list the frontend's PUBLIC URL (browser -> backend is cross-origin).
       # Set this to the balatravel-web URL after the first deploy, e.g.
       #   https://balatravel-web.onrender.com,http://localhost:3000

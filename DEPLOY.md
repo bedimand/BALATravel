@@ -5,14 +5,17 @@ one repo, as two web services defined in [`render.yaml`](./render.yaml).
 
 | Service | Render name | Runtime | Notes |
 |---------|-------------|---------|-------|
-| Backend (FastAPI) | `balatravel-api` | Python | Persistent process — runs the background workflow threads; stores data in SQLite on a persistent disk |
+| Backend (FastAPI) | `balatravel-api` | Python | Persistent process — runs the background workflow threads; stores data in SQLite (ephemeral on free tier, see §3) |
 | Frontend (Next.js) | `balatravel-web` | Node | Runs `next start` (server-rendered `/trips/[id]` needs a live Node server) |
+
+Both run on Render's **free tier** (no cost). See §3 for the data-persistence
+trade-off.
 
 > **Why one host for both?** Render runs persistent Node *and* Python services,
 > so a single Blueprint deploys both together — one dashboard, one repo. (Netlify
-> would also work for the frontend, but it can't host this backend: its
-> serverless functions can't run the long-lived `threading.Thread` workers or
-> keep a SQLite file.)
+> and AWS Amplify can host the Next.js frontend, but neither can host this
+> backend: their serverless functions can't run the long-lived
+> `threading.Thread` workers or keep a SQLite file.)
 
 ---
 
@@ -57,22 +60,33 @@ setup — both URLs must be **public** ones, and CORS must allow the frontend.
 
 ---
 
-## 3. Database persistence (read this)
+## 3. Database — ephemeral on the free tier (read this)
 
-`render.yaml` mounts a **persistent disk** at `/var/data` on the backend and
-points `DATABASE_URL` at `sqlite:////var/data/balatravel.db`, so accounts and
-trips survive redeploys. **Render disks require a paid instance**
-(`plan: starter`, ~$7/mo).
-
-**Free-tier fallback** (data resets on every deploy — fine for a throwaway demo):
-in `render.yaml`, on `balatravel-api` set `plan: free`, delete the `disk:` block,
-and change `DATABASE_URL` to `sqlite:////tmp/balatravel.db`. The schema
-auto-creates on boot, so the app still works — it just starts empty after each
-deploy/restart.
+This Blueprint runs on Render's **free tier**, which has **no persistent disk**.
+The backend stores data in SQLite at `/tmp/balatravel.db`, which is **wiped on
+every deploy/restart** — all accounts and trips reset. The schema auto-creates on
+boot, so the app always works; it just starts empty each time. This is fine for a
+demo or class submission.
 
 > Free Render services also **sleep after ~15 min idle**; the first request after
-> waking takes ~30–50s. This applies to both the API and the web service on the
-> free plan.
+> waking takes ~30–50s (and waking can also reset `/tmp`). Applies to both the API
+> and the web service.
+
+**To keep data permanently** (optional upgrade), pick one:
+
+- **Persistent disk (paid).** In `render.yaml`, on `balatravel-api` set
+  `plan: starter` (~$7/mo), add a disk and point SQLite at it:
+  ```yaml
+      disk:
+        name: balatravel-data
+        mountPath: /var/data
+        sizeGB: 1
+  ```
+  and change `DATABASE_URL` to `sqlite:////var/data/balatravel.db`.
+- **Free hosted Postgres.** Create a free database on Neon or Supabase, set
+  `DATABASE_URL` to its connection string (`postgresql+psycopg://...`), and add
+  the driver to `backend/pyproject.toml` (`psycopg[binary]`). Stays on the free
+  tier and persists. (Small change — ask and I'll wire it.)
 
 ---
 
@@ -90,7 +104,8 @@ deploy/restart.
   the frontend origin (check `https`, no trailing slash).
 - **Frontend calls `localhost:8000`** → `NEXT_PUBLIC_API_URL` wasn't set before
   the frontend build; set it and redeploy `balatravel-web`.
-- **Data gone after a redeploy** → you're on the free tier without a disk (see §3).
+- **Data gone after a redeploy** → expected on the free tier (ephemeral SQLite);
+  see §3 to make it persistent.
 - **First request very slow** → free service was asleep; it wakes in ~30–50s.
 
 ---
