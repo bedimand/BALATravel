@@ -394,16 +394,43 @@ class ToolRegistry:
             cost_estimate="low",
         )
 
+        self._tools["review_itinerary"] = ToolDefinition(
+            name="review_itinerary",
+            description=(
+                "Review the WHOLE current itinerary against objective quality checks. Returns, for every "
+                "trip day, the timeline, activity-type counts, travel/gap stats, and a list of issues "
+                "tagged 'blocking' or 'warning'. Use this as your mirror: call it before finalizing, fix "
+                "every blocking issue (search for an anchor, swap a venue, add lunch/dinner, rebalance with "
+                "set_day), then review again. By default finalize_itinerary refuses a plan that still has "
+                "blocking issues — but if YOU judge a flagged issue is actually fine for this trip, you can "
+                "finalize anyway with override=true and a reason."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+            handler=_handle_review_itinerary,
+            category="scheduling",
+            cost_estimate="low",
+        )
+
         self._tools["finalize_itinerary"] = ToolDefinition(
             name="finalize_itinerary",
             description=(
                 "Mark the current itinerary as complete. Generates a summary and records the mutation. "
-                "Call after all items have been placed."
+                "Call after all items have been placed. By default this refuses while any blocking issue "
+                "remains and returns the full list — fix them and try again. If you have reviewed a blocking "
+                "issue and judge it acceptable for this specific trip (e.g. reusing one great venue, or a day "
+                "the traveler wants lighter), pass override=true with override_reason to finalize anyway; the "
+                "remaining issues are then recorded as warnings on the plan."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "summary": {"type": "string", "description": "Brief summary of the itinerary in Portuguese"},
+                    "override": {"type": "boolean", "description": "Set true to finalize despite remaining blocking issues, when you judge them acceptable."},
+                    "override_reason": {"type": "string", "description": "Required if override=true: why the flagged issues are acceptable for this trip."},
                 },
                 "required": [],
             },
@@ -484,6 +511,7 @@ def _handle_search_places(
         center_lng=params.get("center_lng"),
     )
 
+    added = 0
     if results:
         existing_ids = {
             row.external_id
@@ -496,11 +524,27 @@ def _handle_search_places(
         if new_places:
             db.add_all(new_places)
             db.commit()
+            added = len(new_places)
 
+    # Return the actual places found (not just a count + top-5), so the agent can
+    # immediately decide and — crucially — reuse a venue's lat/lng as center_lat/
+    # center_lng for an anchored follow-up search (e.g. restaurants inside a mall)
+    # without a separate list_saved_places round-trip.
     return {
         "count": len(results),
+        "added": added,
         "query": query,
-        "top_results": [{"name": r["name"], "rating": r.get("rating", 0)} for r in results[:5]],
+        "results": [
+            {
+                "name": r.get("name"),
+                "category": r.get("category"),
+                "rating": r.get("rating", 0),
+                "lat": r.get("lat"),
+                "lng": r.get("lng"),
+                "address": r.get("address_full"),
+            }
+            for r in results
+        ],
     }
 
 
@@ -561,7 +605,7 @@ def _format_opening_hours(hours_json: dict[str, Any]) -> dict[str, str]:
 def _handle_list_places(
     db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
 ) -> dict[str, Any]:
-    places = list(db.scalars(select(Place).where(Place.trip_id == trip.id).order_by(Place.rating.desc())))
+    places = list(db.scalars(select(Place).where(Place.trip_id == trip.id)))
     return {
         "total": len(places),
         "selected_count": sum(1 for p in places if p.is_selected),
@@ -579,7 +623,7 @@ def _handle_list_places(
                 "price_level": p.price_level,
                 "summary": (p.summary[:80] + "...") if p.summary and len(p.summary) > 80 else p.summary,
             }
-            for p in places[:30]
+            for p in places
         ],
     }
 
@@ -851,6 +895,15 @@ def _handle_get_day_schedule(
         if item.date.isoformat() == date_str
     ]
     day_items.sort(key=lambda x: x.start_time)
+
+    # Inline quality report so the agent sees issues while arranging the day,
+    # not only at review time. Same analyzer as review_itinerary/finalize.
+    from app.services.itinerary_quality import analyze_day, classify_item
+    quality = None
+    if day_items:
+        pace = getattr(trip, "travel_pace", None)
+        quality = analyze_day(day_items, pace).as_dict()
+
     return {
         "date": date_str,
         "item_count": len(day_items),
@@ -861,12 +914,14 @@ def _handle_get_day_schedule(
                 "start_time": item.start_time.strftime("%H:%M"),
                 "end_time": item.end_time.strftime("%H:%M"),
                 "item_type": item.item_type,
+                "bucket": classify_item(item),
                 "lat": item.lat,
                 "lng": item.lng,
                 "travel_time_min": item.travel_time_min,
             }
             for item in day_items
         ],
+        "quality": quality,
     }
 
 
@@ -958,27 +1013,27 @@ def _handle_get_day_context(
     }
 
 
-def _validate_itinerary(trip: Trip, active) -> tuple[list[str], list[str]]:
-    from collections import defaultdict
-    from datetime import date as date_type
+def _handle_review_itinerary(
+    db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
+) -> dict[str, Any]:
+    from app.services.agent_tools import get_active_itinerary
+    from app.services.itinerary_quality import analyze_itinerary
 
-    warnings = []
-    errors = []
+    active = get_active_itinerary(trip)
+    if not active:
+        return {"error": "No active itinerary to review. Call start_itinerary and place items first."}
 
-    trip_days = max((trip.end_date - trip.start_date).days + 1, 1)
-    items_by_day: dict[date_type, list] = defaultdict(list)
-    for item in active.items:
-        items_by_day[item.date].append(item)
-
-    covered_days = len(items_by_day)
-    if covered_days < trip_days:
-        missing = trip_days - covered_days
-        # Surfaced as a warning, NOT an error: the agent decides whether an
-        # empty day is acceptable (e.g. the user asked to plan only some days,
-        # or wants a free day). We don't block finalize on a product rule.
-        warnings.append(f"{missing} trip day(s) have no activities scheduled.")
-
-    return warnings, errors
+    pace = getattr(trip, "travel_pace", None)
+    report = analyze_itinerary(trip, active, pace)
+    if report["blocking_count"] == 0:
+        report["verdict"] = "OK — no blocking issues. You may call finalize_itinerary."
+    else:
+        report["verdict"] = (
+            f"{report['blocking_count']} blocking issue(s) across the trip. Fix them, then review again. "
+            "finalize_itinerary refuses until they are resolved — unless you judge a flagged issue acceptable "
+            "for this trip, in which case finalize with override=true and a reason."
+        )
+    return report
 
 
 def _handle_finalize_itinerary(
@@ -986,6 +1041,7 @@ def _handle_finalize_itinerary(
 ) -> dict[str, Any]:
     from app.models.entities import PlanMutation
     from app.services.agent_tools import get_active_itinerary
+    from app.services.itinerary_quality import analyze_itinerary
     from app.services.llm import summarize_itinerary, LLMIntegrationError
 
     active = get_active_itinerary(trip)
@@ -995,12 +1051,46 @@ def _handle_finalize_itinerary(
     if not active.items:
         return {"error": "Itinerary has no items. Place items before finalizing."}
 
-    validation_warnings, validation_errors = _validate_itinerary(trip, active)
-    if validation_errors:
+    # Quality gate. By default the agent must iterate (search for an anchor, add
+    # lunch/dinner, rebalance with set_day) until review_itinerary reports zero
+    # blocking issues. But the agent OWNS the final judgement: if it reviewed a
+    # flagged issue and considers it acceptable for this trip, it can override.
+    # Same analyzer that powers review_itinerary, so the two never disagree.
+    pace = getattr(trip, "travel_pace", None)
+    report = analyze_itinerary(trip, active, pace)
+    override = bool(params.get("override"))
+    override_reason = str(params.get("override_reason") or "").strip()
+
+    if report["blocking_count"] > 0 and not override:
+        offending = [
+            {"date": d["date"], "issues": [i for i in d["issues"] if i["severity"] == "blocking"]}
+            for d in report["days"]
+            if d["blocking_count"] > 0
+        ]
         return {
-            "error": "Cannot finalize — critical issues found. Fix them first.",
-            "issues": validation_errors + validation_warnings,
+            "error": (
+                f"Cannot finalize — {report['blocking_count']} blocking issue(s) remain. "
+                "Fix each one (search_places for a missing anchor or meal, swap a venue, or rebalance the "
+                "day with set_day), then call review_itinerary again. If you judge a flagged issue is actually "
+                "fine for this trip, finalize again with override=true and override_reason."
+            ),
+            "blocking_days": offending,
         }
+
+    # All issues that remain at finalize time become soft warnings on the plan.
+    # When overriding, that includes the blocking ones the agent chose to accept.
+    validation_warnings = [
+        f"{d['date']}: {i['message']}"
+        for d in report["days"]
+        for i in d["issues"]
+        if override or i["severity"] == "warning"
+    ]
+    if override and report["blocking_count"] > 0:
+        validation_warnings.insert(
+            0,
+            f"Agente finalizou com {report['blocking_count']} ressalva(s) aceita(s)"
+            + (f": {override_reason}" if override_reason else "."),
+        )
 
     n_days = len(set(item.date for item in active.items))
     active.total_estimated_cost = trip.budget / max(len(active.items), 1)
