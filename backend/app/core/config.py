@@ -1,7 +1,9 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 CONFIG_DIR = Path(__file__).resolve().parent
@@ -17,7 +19,9 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     refresh_token_expire_minutes: int = 60 * 24 * 7
     algorithm: str = "HS256"
-    cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    # Accepts a comma-separated string from the env (e.g. CORS_ORIGINS="https://app.netlify.app,http://localhost:3000")
+    # or a real list in code. Useful so the deployed frontend domain can be allowed without a code change.
+    cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000", "http://127.0.0.1:3000"]
     storage_dir: Path = Path("storage/exports")
     serpapi_api_key: str | None = None
     serpapi_base_url: str = "https://serpapi.com/search.json"
@@ -40,6 +44,13 @@ class Settings(BaseSettings):
     agent_max_steps_reactive: int = 30
     agent_max_steps_autonomous: int = 120
     agent_max_token_budget: int = 800000
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _split_cors_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
 
     model_config = SettingsConfigDict(
         env_file=(str(BACKEND_DIR / ".env"), str(WORKSPACE_DIR / ".env"), ".env", "../.env"),

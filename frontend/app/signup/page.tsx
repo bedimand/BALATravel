@@ -18,7 +18,7 @@ export default function SignupPage() {
     event.preventDefault();
     setError(null);
     if (password.length < 8) {
-      setError("A senha precisa ter ao menos 8 caracteres.");
+      setError("A senha precisa ter no mínimo 8 caracteres.");
       return;
     }
     setLoading(true);
@@ -81,7 +81,7 @@ export default function SignupPage() {
             style={{ width: "100%" }}
           />
           <span style={{ display: "block", marginTop: "0.35rem", fontSize: "0.8rem", color: "var(--muted)" }}>
-            Minimo de 8 caracteres.
+            Mínimo de 8 caracteres.
           </span>
         </label>
 
@@ -92,7 +92,7 @@ export default function SignupPage() {
         </button>
 
         <p style={{ textAlign: "center", fontSize: "0.9rem", color: "var(--muted)" }}>
-          Ja tem conta? <Link href="/login">Entrar</Link>
+          Já tem conta? <Link href="/login">Entrar</Link>
         </p>
       </form>
     </main>

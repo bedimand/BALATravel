@@ -70,7 +70,7 @@ export default function LoginPage() {
         </button>
 
         <p style={{ textAlign: "center", fontSize: "0.9rem", color: "var(--muted)" }}>
-          Nao tem conta? <Link href="/signup">Criar conta</Link>
+          Não tem conta? <Link href="/signup">Criar conta</Link>
         </p>
       </form>
     </main>

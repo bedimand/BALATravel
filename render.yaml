@@ -1,0 +1,76 @@
+# Render Blueprint for BALATravel — deploys BOTH the FastAPI backend and the
+# Next.js frontend as separate web services from this one repo.
+# Deploy via: Render Dashboard > New > Blueprint > point at this repo.
+#
+# IMPORTANT — SQLite persistence:
+#   The backend mounts a persistent disk so the SQLite file survives redeploys.
+#   Render disks require a PAID instance (Starter, ~$7/mo); the free tier has
+#   ephemeral storage only. See DEPLOY.md for the free-tier fallback (data
+#   resets on each deploy — fine for a throwaway demo).
+
+services:
+  # ---------------------------------------------------------------------------
+  # Backend — FastAPI (persistent process; needed for background threads + SQLite)
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: balatravel-api
+    runtime: python
+    plan: starter            # required for the persistent disk below; use `free` to drop the disk
+    rootDir: backend
+    buildCommand: pip install .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    disk:
+      name: balatravel-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      # SQLite living on the persistent disk (4 slashes = absolute path).
+      - key: DATABASE_URL
+        value: sqlite:////var/data/balatravel.db
+      # Must list the frontend's PUBLIC URL (browser -> backend is cross-origin).
+      # Set this to the balatravel-web URL after the first deploy, e.g.
+      #   https://balatravel-web.onrender.com,http://localhost:3000
+      - key: CORS_ORIGINS
+        value: https://YOUR-FRONTEND.onrender.com,http://localhost:3000
+      # Auto-generated strong secret for signing JWTs.
+      - key: SECRET_KEY
+        generateValue: true
+      # --- LLM + external APIs: set these as secrets in the Render dashboard ---
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        sync: false
+      - key: OPENAI_MODEL
+        sync: false
+      - key: SERPAPI_API_KEY
+        sync: false
+      - key: GOOGLE_ROUTES_API_KEY
+        sync: false
+      - key: OPENWEATHER_API_KEY
+        sync: false
+      - key: OPENTRIPMAP_API_KEY
+        sync: false
+
+  # ---------------------------------------------------------------------------
+  # Frontend — Next.js (runs `next start` as a persistent Node server)
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: balatravel-web
+    runtime: node
+    plan: free               # bump to `starter` to avoid cold-start sleeps
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start -- --port $PORT
+    envVars:
+      # NEXT_PUBLIC_* is inlined into the browser bundle at BUILD time, so it
+      # must be the backend's PUBLIC URL (with the /api suffix), not an internal
+      # one. Set this to the balatravel-api URL after its first deploy, e.g.
+      #   https://balatravel-api.onrender.com/api
+      # Changing it requires a redeploy of this service to take effect.
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+      - key: NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
+        sync: false
