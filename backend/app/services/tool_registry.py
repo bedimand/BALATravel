@@ -397,9 +397,11 @@ class ToolRegistry:
         self._tools["review_itinerary"] = ToolDefinition(
             name="review_itinerary",
             description=(
-                "Review the WHOLE current itinerary against objective quality checks. Returns, for every "
-                "trip day, the timeline, activity-type counts, travel/gap stats, and a list of issues "
-                "tagged 'blocking' or 'warning'. Use this as your mirror: call it before finalizing, fix "
+                "Review the WHOLE current itinerary. Returns, for every trip day, the timeline, activity-type "
+                "counts, travel/gap stats, and a list of issues tagged 'blocking', 'warning', or 'critique'. "
+                "'critique' issues come from a separate expert reviewer judging real-world sense (e.g. a "
+                "sit-down restaurant or bar scheduled at 09:00, monotony, bad pacing) — they don't block but "
+                "you should fix them when reasonable. Use this as your mirror: call it before finalizing, fix "
                 "every blocking issue (search for an anchor, swap a venue, add lunch/dinner, rebalance with "
                 "set_day), then review again. By default finalize_itinerary refuses a plan that still has "
                 "blocking issues — but if YOU judge a flagged issue is actually fine for this trip, you can "
@@ -1013,11 +1015,25 @@ def _handle_get_day_context(
     }
 
 
+def _render_days_for_critique(report: dict[str, Any]) -> str:
+    """Compact human-readable rendering of the placed days for the LLM critic."""
+    lines = []
+    for d in report["days"]:
+        if not d["timeline"]:
+            lines.append(f"{d['date']}: (vazio)")
+            continue
+        lines.append(f"{d['date']}:")
+        for t in d["timeline"]:
+            lines.append(f"  {t['start']}-{t['end']} [{t['bucket']}] {t['title']}")
+    return "\n".join(lines)
+
+
 def _handle_review_itinerary(
     db: Session, trip: Trip, run: AgentRun | WorkflowRun, params: dict[str, Any]
 ) -> dict[str, Any]:
     from app.services.agent_tools import get_active_itinerary
     from app.services.itinerary_quality import analyze_itinerary
+    from app.services.llm import critique_itinerary
 
     active = get_active_itinerary(trip)
     if not active:
@@ -1025,13 +1041,28 @@ def _handle_review_itinerary(
 
     pace = getattr(trip, "travel_pace", None)
     report = analyze_itinerary(trip, active, pace)
+
+    # Second opinion: a SEPARATE LLM critic judges what the deterministic rules can't —
+    # venues at wrong hours, dull repetition, bad pacing. Advisory only (never blocking),
+    # attached per day so the agent reads them alongside the rule-based issues. Best-effort.
+    critiques = critique_itinerary(trip, _render_days_for_critique(report)) if active.items else []
+    by_date: dict[str, list[dict]] = {}
+    for c in critiques:
+        by_date.setdefault(c.get("date", ""), []).append(c)
+    for d in report["days"]:
+        for c in by_date.get(d["date"], []):
+            d["issues"].append({"severity": "critique", "code": "critique", "message": c["message"]})
+    report["critique_count"] = len(critiques)
+
     if report["blocking_count"] == 0:
-        report["verdict"] = "OK — no blocking issues. You may call finalize_itinerary."
+        suffix = " Há também ressalvas do crítico (severity 'critique') — avalie e ajuste se fizer sentido." if critiques else ""
+        report["verdict"] = "OK — no blocking issues. You may call finalize_itinerary." + suffix
     else:
         report["verdict"] = (
             f"{report['blocking_count']} blocking issue(s) across the trip. Fix them, then review again. "
             "finalize_itinerary refuses until they are resolved — unless you judge a flagged issue acceptable "
-            "for this trip, in which case finalize with override=true and a reason."
+            "for this trip, in which case finalize with override=true and a reason. "
+            "Also review any 'critique' issues (judgment calls — fix when sensible)."
         )
     return report
 

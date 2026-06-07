@@ -63,9 +63,12 @@ export type DecisionOption = {
 export type Decision = {
   id: number;
   decision_type: string;
+  kind?: string;
   title: string;
   summary: string;
   options_json: DecisionOption[];
+  recommended_option_id?: string | null;
+  payload_json?: { proposal?: ProposedChange } & Record<string, unknown>;
   status: "pending" | "decided";
 };
 

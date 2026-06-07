@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.entities import (
     AgentArtifact,
+    AgentRun,
     DecisionRequest,
     ItineraryVersion,
     Place,
@@ -220,32 +221,59 @@ class WorkflowService:
             return current
         return trip.start_date
 
+    def _record_chat_run(
+        self,
+        db: Session,
+        trip: Trip,
+        user_message: str | None,
+        assistant_message: str,
+        applied_changes: list[dict[str, Any]] | None = None,
+    ) -> AgentRun:
+        # The chat thread (GET /agent/thread) is built from AgentRun rows, so every
+        # conversational turn — question, answer, or change explanation — is stored
+        # here. This is what makes the panel behave like a real chat instead of only
+        # echoing a canned "change applied" line.
+        chat_run = AgentRun(
+            trip_id=trip.id,
+            intent="chat",
+            status="completed",
+            user_message=user_message,
+            assistant_message=assistant_message,
+            model="central_mind",
+            warnings=[],
+            applied_changes=applied_changes or [],
+            completed_at=_now(),
+        )
+        db.add(chat_run)
+        db.commit()
+        db.refresh(chat_run)
+        return chat_run
+
     def _create_change_decision(self, db: Session, trip: Trip, message: str, run: WorkflowRun | None = None) -> None:
-        # The agent (LLM) decides what change the user's message implies — there is
-        # NO keyword routing. build_chat_response interprets the request against the
-        # live itinerary and returns a structured proposal, which the user approves
-        # before anything is applied.
+        # The agent (LLM) decides what the user's message implies — there is NO keyword
+        # routing. build_chat_response interprets the request against the live itinerary
+        # and either just answers conversationally or returns a structured proposal that
+        # the user approves before anything is applied.
         active = get_active_itinerary(trip)
         places = self._load_places(db, trip.id)
-        proposal: dict[str, Any] | None = None
-        if active:
-            try:
-                preview = build_chat_response(trip, active, places, message)
-            except LLMIntegrationError as exc:
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
-            if preview.proposed_changes:
-                proposal = preview.proposed_changes[0].model_dump()
+        try:
+            preview = build_chat_response(trip, active, places, message)
+        except LLMIntegrationError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        proposal: dict[str, Any] | None = (
+            preview.proposed_changes[0].model_dump() if preview.proposed_changes else None
+        )
+
+        # Always record the turn so the user's message and the assistant's real reply
+        # appear in the thread (even for plain conversation with no change).
+        assistant_text = preview.assistant_message.strip() or (
+            proposal["reason"] if proposal else "Certo!"
+        )
+        self._record_chat_run(db, trip, user_message=message, assistant_message=assistant_text)
 
         if not proposal:
-            self._replace_artifact(
-                db,
-                trip,
-                "change_diff",
-                "Nenhuma mudanca segura encontrada",
-                "O pedido foi salvo, mas ainda nao encontrei uma mudanca automatica segura para aprovar.",
-                {"message": message},
-                run=run,
-            )
+            # Pure conversation — nothing to approve, no error artifact.
             return
 
         self._replace_artifact(
@@ -284,6 +312,10 @@ class WorkflowService:
             if not date_text:
                 raise HTTPException(status_code=400, detail="Missing date for set_day proposal.")
             tool_set_day(db, trip, date_text, items, rationale=str(proposal.get("reason") or "Workflow set day"), run=None)
+            # apply_change records its own confirmation run; set_day goes straight to the
+            # tool, so add the confirmation here to keep the thread consistent.
+            title = str(proposal.get("title") or f"Dia {date_text} reorganizado")
+            self._record_chat_run(db, trip, user_message=None, assistant_message=f"Pronto! {title} ✓")
             return
         raise HTTPException(status_code=400, detail="Unsupported proposal type.")
 
@@ -398,6 +430,11 @@ class WorkflowService:
             return self.build_workspace(db, trip.id)
 
         if decision.kind == "change_approval" and action == "reject":
+            title = str((decision.payload_json or {}).get("proposal", {}).get("title") or decision.title)
+            self._record_chat_run(
+                db, trip, user_message=None,
+                assistant_message=f"Sem problema, descartei a sugestão{f' ({title})' if title else ''}. Quer tentar de outro jeito?",
+            )
             state.current_stage = "active"
             state.stage_status = "ready"
             db.add(state)

@@ -53,7 +53,7 @@ def build_chat_response(trip: Trip, itinerary: ItineraryVersion | None, places: 
         "Responda com JSON valido apenas, sem markdown.\n"
         "Formato:\n"
         "{\n"
-        '  "assistant_message": "texto curto",\n'
+        '  "assistant_message": "sua resposta em texto para o usuario",\n'
         '  "proposed_changes": [\n'
         "    {\n"
         '      "type": "update_item|set_day|generate_itinerary",\n'
@@ -64,6 +64,13 @@ def build_chat_response(trip: Trip, itinerary: ItineraryVersion | None, places: 
         "  ],\n"
         '  "warnings": ["..."]\n'
         "}\n\n"
+        "VOCE E UM ASSISTENTE DE CONVERSA. Comporte-se como um chat:\n"
+        "- Se o usuario fizer uma pergunta, pedir uma opiniao, agradecer ou apenas conversar "
+        '(ex: "qual o melhor dia para a praia?", "obrigado", "o que voce acha do dia 2?"), '
+        'responda em "assistant_message" e deixe "proposed_changes" como lista VAZIA []. NAO invente mudancas.\n'
+        "- So inclua um item em \"proposed_changes\" quando o usuario claramente pedir para MODIFICAR o roteiro "
+        '(ex: "troque o restaurante", "reorganize o dia 2", "adicione um museu"). '
+        'Nesse caso, escreva tambem uma "assistant_message" explicando em linguagem natural o que voce esta propondo.\n\n'
         "Tipos de mudanca:\n"
         '- "update_item": ajustar UM item existente. payload: {"item_id": 123, "title": "...", "notes": "...", "start_time": "09:30:00", "end_time": "11:00:00"}\n'
         '- "set_day": redefinir um dia INTEIRO. VOCE decide a ordem e os horarios e envia a lista completa. '
@@ -79,7 +86,9 @@ def build_chat_response(trip: Trip, itinerary: ItineraryVersion | None, places: 
         f"Warnings atuais: {', '.join(warnings) if warnings else 'nenhum'}\n"
         f"Mensagem do usuario: {user_message}\n"
         "Regras: proponha no maximo 3 mudancas, seja pratico, nunca sugira compra automatica. "
-        "Escolha o tipo de mudanca que melhor atende ao pedido do usuario."
+        "Quando propor, escolha o tipo de mudanca que melhor atende ao pedido. "
+        'Quando for apenas conversa, "proposed_changes" deve ser []. '
+        'Sempre preencha "assistant_message".'
     )
 
     response_text = llm_chat(
@@ -99,8 +108,11 @@ def build_chat_response(trip: Trip, itinerary: ItineraryVersion | None, places: 
         parsed_response = ChatResponse.model_validate(parsed_payload)
     except Exception as exc:
         raise LLMIntegrationError("OpenRouter returned an invalid chat response payload.") from exc
-    if not parsed_response.proposed_changes:
-        raise LLMIntegrationError("OpenRouter returned no proposed changes for chat planning.")
+    # A reply with no proposed_changes is valid: the user is just chatting, and
+    # assistant_message carries the conversational answer. We only require that
+    # the model said *something* back.
+    if not parsed_response.assistant_message.strip() and not parsed_response.proposed_changes:
+        raise LLMIntegrationError("OpenRouter returned an empty chat response.")
     return parsed_response
 
 

@@ -111,7 +111,10 @@ class AgentCoordinator:
             trip_id=trip.id,
             intent="apply_change",
             status="running",
-            user_message=change.title,
+            # The user's real message already lives in the thread (recorded when the
+            # proposal was created), so leave this null to avoid a duplicate bubble
+            # echoing the proposal title.
+            user_message=None,
             model="central_mind",
             prompt_version=PROMPT_VERSION,
             warnings=[],
@@ -127,7 +130,7 @@ class AgentCoordinator:
         trip, metadata = applied
 
         run.status = "completed"
-        run.assistant_message = f"Apliquei a mudanca '{change.title}' automaticamente."
+        run.assistant_message = f"Pronto! {change.title} já está no seu roteiro. ✓"
         run.applied_changes = [metadata]
         run.completed_at = datetime.now(UTC)
         db.add(run)

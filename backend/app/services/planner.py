@@ -1,6 +1,18 @@
 from __future__ import annotations
 
-from app.models.entities import ItineraryItem, Trip
+import unicodedata
+
+from app.models.entities import ItineraryItem, Place, Trip
+
+
+def _normalize_place_name(name: str | None) -> str:
+    # Strip accents, lowercase, and drop non-alphanumerics so "Harina Café" and
+    # "harina cafe" (and the item title vs the place name) compare equal.
+    if not name:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", name)
+    ascii_name = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return "".join(ch for ch in ascii_name.lower() if ch.isalnum())
 
 
 def _decode_polyline(encoded: str | None) -> list[list[float]]:
@@ -55,13 +67,32 @@ def build_map_payload(trip: Trip) -> dict:
             "summary": trip.accommodation_address,
         })
 
-    place_lookup = {place.external_id: place for place in trip.places} if hasattr(trip, "places") else {}
+    trip_places = list(trip.places) if hasattr(trip, "places") else []
+    place_lookup = {place.external_id: place for place in trip_places}
+    # The agent often creates itinerary items without wiring up place_ref, so the
+    # external_id join below misses and the marker loses its rich data (rating,
+    # photo, price...). Fall back to matching by normalized name, then by close
+    # coordinates, so enriched fields show up even when place_ref is null.
+    name_lookup = {_normalize_place_name(place.name): place for place in trip_places}
+
+    def _resolve_place(item: ItineraryItem) -> Place | None:
+        if item.place_ref and item.place_ref in place_lookup:
+            return place_lookup[item.place_ref]
+        by_name = name_lookup.get(_normalize_place_name(item.title))
+        if by_name:
+            return by_name
+        if item.lat and item.lng:
+            for candidate in trip_places:
+                if abs(candidate.lat - item.lat) < 1e-4 and abs(candidate.lng - item.lng) < 1e-4:
+                    return candidate
+        return None
+
     previous_marker_id = None
     previous_item: ItineraryItem | None = None
     if active:
         sorted_items = sorted(active.items, key=lambda item: (item.date, item.start_time))
         for item in sorted_items:
-            place = place_lookup.get(item.place_ref or "")
+            place = _resolve_place(item)
             marker_id = f"item-{item.id}"
             markers.append(
                 {

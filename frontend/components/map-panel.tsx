@@ -15,12 +15,19 @@ const DAY_COLORS = [
   "#1abc9c", // Day 6 Turquoise
 ];
 
-// Initialize options once at the top level
-setOptions({
-  key: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "",
-  v: "weekly",
-  libraries: ["marker"],
-});
+// The loader touches `window`, so options must be set in the browser only — never at
+// module top level, which also runs during server-side rendering (where `window` is
+// undefined). Guarded so it runs exactly once on the client.
+let optionsInitialized = false;
+function ensureLoaderOptions() {
+  if (optionsInitialized) return;
+  setOptions({
+    key: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "",
+    v: "weekly",
+    libraries: ["marker"],
+  });
+  optionsInitialized = true;
+}
 
 type Props = {
   map: MapResponse;
@@ -105,6 +112,7 @@ export function MapPanel({ map, selectedPlaceId, onPlaceClick, activeDay, baseLa
     let disposed = false;
 
     const initMap = async () => {
+      ensureLoaderOptions();
       const { Map } = (await importLibrary("maps")) as google.maps.MapsLibrary;
       const { AdvancedMarkerElement, PinElement } = (await importLibrary("marker")) as google.maps.MarkerLibrary;
 

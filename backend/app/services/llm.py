@@ -126,6 +126,56 @@ def llm_chat(prompt: str | list[dict], system_prompt: str | None = None, tempera
     raise LLMIntegrationError(f"LLM exhausted all providers. Last error: {last_error}")
 
 
+def critique_itinerary(trip: Trip, days_text: str) -> list[dict]:
+    """Fresh-eyes LLM critic for the JUDGMENT problems deterministic rules can't see:
+    venues scheduled at inappropriate/closed hours (a sit-down restaurant or bar at
+    09:00), dull repetition, unrealistic pacing, a dud choice for the slot.
+
+    This is a SEPARATE call from the planning agent — a second opinion, not the agent
+    grading its own homework. Returns a list of {date, severity, message} advisory
+    issues (never blocking). Best-effort: any failure returns [] so review never breaks.
+    """
+    system = (
+        "You are a sharp, skeptical local travel expert reviewing a day-by-day itinerary. "
+        "Find concrete problems a real traveler would actually hit — focus on JUDGMENT issues, "
+        "not counting: a venue scheduled when it's closed or makes no sense for that hour "
+        "(e.g. a full sit-down restaurant or a bar at 09:00 instead of a café/bakery), a poor "
+        "choice for the slot, monotony (same kind of place over and over), an exhausting or "
+        "illogical sequence. Do NOT restate generic rules; only flag things that are genuinely off. "
+        "If the plan is sensible, return an empty list.\n"
+        "Reply ONLY with JSON: {\"issues\":[{\"date\":\"YYYY-MM-DD\",\"message\":\"...\"}]}. "
+        "Messages in Brazilian Portuguese, specific and short."
+    )
+    prompt = (
+        f"Destino: {trip.destination}. Estilo: {trip.style or 'equilibrado'}.\n\n"
+        f"Roteiro:\n{days_text}\n\n"
+        "Liste apenas os problemas reais."
+    )
+    try:
+        raw = llm_chat(prompt, system_prompt=system, temperature=0.3)
+    except LLMIntegrationError:
+        return []
+    try:
+        start, end = raw.find("{"), raw.rfind("}")
+        if start == -1 or end == -1:
+            return []
+        data = json.loads(raw[start:end + 1])
+        issues = data.get("issues", [])
+        out = []
+        for it in issues:
+            msg = str(it.get("message", "")).strip()
+            if not msg:
+                continue
+            out.append({
+                "date": str(it.get("date", "")).strip(),
+                "severity": "critique",
+                "message": msg,
+            })
+        return out
+    except (json.JSONDecodeError, ValueError, AttributeError, TypeError):
+        return []
+
+
 def summarize_itinerary(trip: Trip, days: int, warnings: list[str]) -> str:
     prompt = (
         "Escreva um resumo curto de roteiro em portugues do Brasil.\n"

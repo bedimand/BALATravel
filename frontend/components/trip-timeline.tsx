@@ -28,6 +28,12 @@ const KIND_ICONS: Record<string, string> = {
 
 type Marker = MapResponse["markers"][number];
 
+// "09:00:00" / "09:00" → "09:00"; leaves anything unexpected untouched.
+function formatTime(value: string): string {
+  const match = value.match(/^(\d{1,2}):(\d{2})/);
+  return match ? `${match[1].padStart(2, "0")}:${match[2]}` : value;
+}
+
 type Props = {
   markers: Marker[];
   dates: string[];
@@ -110,14 +116,15 @@ export function TripTimeline({
                 const isSelected = selectedPlaceId === marker.id;
                 const isNew = highlightIds?.has(marker.id) ?? false;
                 const icon = KIND_ICONS[marker.kind] ?? KIND_ICONS.default;
+                const description = marker.editorial_note || marker.summary;
                 return (
                   <div
                     key={marker.id}
                     onClick={() => onPlaceClick(marker.id)}
                     className={isNew ? "timeline-item timeline-item--new" : "timeline-item"}
                     style={{
-                      position: "relative", marginBottom: "0.55rem", padding: "0.6rem 0.8rem",
-                      borderRadius: "0.85rem", cursor: "pointer",
+                      position: "relative", marginBottom: "0.55rem",
+                      borderRadius: "0.85rem", cursor: "pointer", overflow: "hidden",
                       background: isSelected ? "rgba(0,229,255,0.1)" : "rgba(255,255,255,0.03)",
                       border: `1px solid ${isSelected ? "rgba(0,229,255,0.45)" : "rgba(255,255,255,0.05)"}`,
                       transition: "background 0.25s, border-color 0.25s, transform 0.25s",
@@ -125,29 +132,73 @@ export function TripTimeline({
                   >
                     {/* node dot on the rail */}
                     <span style={{
-                      position: "absolute", left: "-1.45rem", top: "0.85rem",
+                      position: "absolute", left: "-1.45rem", top: "0.95rem",
                       width: "9px", height: "9px", borderRadius: "50%",
                       background: isSelected ? "#00e5ff" : day.color,
-                      border: "2px solid #0a0f1e", boxSizing: "content-box",
+                      border: "2px solid #0a0f1e", boxSizing: "content-box", zIndex: 1,
                     }} />
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                      {marker.start_time && (
-                        <span style={{
-                          fontSize: "0.68rem", fontWeight: 700, color: isSelected ? "#00e5ff" : "rgba(255,255,255,0.75)",
-                          fontVariantNumeric: "tabular-nums", flexShrink: 0,
-                        }}>{marker.start_time}</span>
-                      )}
-                      <span style={{ fontSize: "0.9rem", flexShrink: 0 }}>{icon}</span>
-                      <span style={{
-                        fontSize: "0.8rem", fontWeight: 500, color: isSelected ? "#00e5ff" : "white",
-                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                      }}>{marker.title}</span>
-                      {isNew && (
-                        <span style={{
-                          marginLeft: "auto", fontSize: "0.6rem", fontWeight: 700, color: "#00e5ff",
-                          background: "rgba(0,229,255,0.15)", padding: "1px 6px", borderRadius: "0.5rem", flexShrink: 0,
-                        }}>novo</span>
-                      )}
+
+                    <div style={{ display: "flex", gap: "0.65rem", padding: "0.6rem 0.7rem" }}>
+                      {/* Thumbnail (falls back to a kind icon tile) */}
+                      <div style={{
+                        width: "46px", height: "46px", borderRadius: "0.6rem", flexShrink: 0,
+                        background: "rgba(255,255,255,0.05)", display: "grid", placeItems: "center",
+                        overflow: "hidden",
+                      }}>
+                        {marker.image_url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={marker.image_url} alt={marker.title}
+                            style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        ) : (
+                          <span style={{ fontSize: "1.2rem" }}>{icon}</span>
+                        )}
+                      </div>
+
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        {/* Title + time */}
+                        <div style={{ display: "flex", alignItems: "baseline", gap: "0.5rem" }}>
+                          <span style={{
+                            fontSize: "0.82rem", fontWeight: 600, color: isSelected ? "#00e5ff" : "white",
+                            overflowWrap: "anywhere", flex: 1, minWidth: 0,
+                          }}>{marker.title}</span>
+                          {marker.start_time && (
+                            <span style={{
+                              fontSize: "0.66rem", fontWeight: 700,
+                              color: isSelected ? "#00e5ff" : "rgba(255,255,255,0.7)",
+                              fontVariantNumeric: "tabular-nums", flexShrink: 0, whiteSpace: "nowrap",
+                            }}>{formatTime(marker.start_time)}</span>
+                          )}
+                        </div>
+
+                        {/* Meta row: category · rating · price */}
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.2rem", flexWrap: "wrap" }}>
+                          <span style={{
+                            fontSize: "0.6rem", opacity: 0.45, textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 600,
+                          }}>{marker.kind}</span>
+                          {marker.rating != null && (
+                            <span style={{ fontSize: "0.66rem", color: "#f1c40f", fontWeight: 600 }}>
+                              ★ {marker.rating}
+                              {marker.user_ratings_total != null && (
+                                <span style={{ opacity: 0.45, fontWeight: 400 }}> ({marker.user_ratings_total.toLocaleString()})</span>
+                              )}
+                            </span>
+                          )}
+                          {isNew && (
+                            <span style={{
+                              marginLeft: "auto", fontSize: "0.58rem", fontWeight: 700, color: "#00e5ff",
+                              background: "rgba(0,229,255,0.15)", padding: "1px 6px", borderRadius: "0.5rem", flexShrink: 0,
+                            }}>novo</span>
+                          )}
+                        </div>
+
+                        {/* Description */}
+                        {description && (
+                          <p style={{
+                            margin: "0.35rem 0 0", fontSize: "0.7rem", lineHeight: 1.4, opacity: 0.6,
+                            overflowWrap: "anywhere",
+                          }}>{description}</p>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
