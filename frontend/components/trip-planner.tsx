@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import type { WorkspaceResponse, AgentThread } from "@/lib/types";
 import { AgentThinking } from "./agent-thinking";
 import { MapPanel } from "./map-panel";
+import { TripTimeline } from "./trip-timeline";
 
 type Props = { tripId: string };
 
@@ -33,6 +34,10 @@ export function TripPlanner({ tripId }: Props) {
   const [loading, setLoading] = useState(true);
   const [activeDay, setActiveDay] = useState<string | null>("all");
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
+  const [sidebarView, setSidebarView] = useState<"list" | "timeline">("list");
+  const [highlightIds, setHighlightIds] = useState<Set<string>>(new Set());
+  const prevMarkerIdsRef = useRef<Set<string> | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
@@ -80,10 +85,11 @@ export function TripPlanner({ tripId }: Props) {
 
   useEffect(() => {
     if (isAgentThinking) {
+      // Faster cadence during the build so pins/timeline feel live.
       pollRef.current = setInterval(async () => {
         await loadWorkspace();
         await loadThread();
-      }, 4000);
+      }, 2000);
     } else {
       if (pollRef.current) clearInterval(pollRef.current);
     }
@@ -91,6 +97,30 @@ export function TripPlanner({ tripId }: Props) {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, [isAgentThinking, loadWorkspace, loadThread]);
+
+  // Detect newly-arrived itinerary markers between workspace refreshes and flag them
+  // so the timeline can animate them in. Only meaningful while the agent is building.
+  useEffect(() => {
+    const currentIds = new Set(
+      (workspace?.map.markers ?? [])
+        .filter((m) => m.kind !== "accommodation")
+        .map((m) => m.id)
+    );
+    const prev = prevMarkerIdsRef.current;
+    prevMarkerIdsRef.current = currentIds;
+
+    if (!prev || !isAgentThinking) return;
+    const fresh = [...currentIds].filter((id) => !prev.has(id));
+    if (fresh.length === 0) return;
+
+    setHighlightIds((curr) => {
+      const next = new Set(curr);
+      fresh.forEach((id) => next.add(id));
+      return next;
+    });
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightIds(new Set()), 2500);
+  }, [workspace, isAgentThinking]);
 
   useEffect(() => {
     if (chatOpen) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -159,6 +189,10 @@ export function TripPlanner({ tripId }: Props) {
   if (!workspace) return <div style={{ color: "white", padding: "2rem" }}>Falha ao carregar.</div>;
 
   const allRuns = thread?.runs ?? [];
+
+  // While the agent is building, the timeline tells the story best; otherwise honor
+  // the user's Lista/Agenda choice.
+  const effectiveView = isAgentThinking ? "timeline" : sidebarView;
 
   return (
     <main style={{
@@ -259,9 +293,43 @@ export function TripPlanner({ tripId }: Props) {
               </button>
             ))}
           </div>
+
+          {/* Lista / Agenda view toggle (hidden during build — timeline is forced) */}
+          {!isAgentThinking && (
+            <div style={{ marginTop: "0.75rem", display: "flex", gap: "0.3rem", background: "rgba(255,255,255,0.04)", padding: "0.25rem", borderRadius: "0.8rem" }}>
+              {(["list", "timeline"] as const).map((view) => (
+                <button
+                  key={view}
+                  onClick={() => setSidebarView(view)}
+                  style={{
+                    flex: 1, padding: "0.4rem 0.5rem", borderRadius: "0.6rem", border: "none", cursor: "pointer",
+                    fontSize: "0.74rem", fontWeight: 700,
+                    background: sidebarView === view ? "rgba(0,229,255,0.15)" : "transparent",
+                    color: sidebarView === view ? "#00e5ff" : "rgba(255,255,255,0.6)",
+                    transition: "all 0.2s ease",
+                  }}
+                >
+                  {view === "list" ? "Lista" : "Agenda"}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Itinerary list */}
+        {/* Itinerary body: timeline (build mode + Agenda) or list */}
+        {effectiveView === "timeline" ? (
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            <TripTimeline
+              markers={workspace.map.markers}
+              dates={dates}
+              activeDay={activeDay}
+              selectedPlaceId={selectedPlaceId}
+              onPlaceClick={(id) => setSelectedPlaceId(selectedPlaceId === id ? null : id)}
+              highlightIds={highlightIds}
+              compact
+            />
+          </div>
+        ) : (
         <div style={{ flex: 1, overflowY: "auto", padding: "0.75rem" }}>
           {visibleMarkers.length === 0 ? (
             <div style={{ textAlign: "center", opacity: 0.35, marginTop: "3rem", fontSize: "0.85rem" }}>
@@ -320,8 +388,10 @@ export function TripPlanner({ tripId }: Props) {
             })
           )}
         </div>
+        )}
 
-        {/* Chat toggle button */}
+        {/* Chat toggle button (hidden while the agent is building) */}
+        {!isAgentThinking && (
         <div style={{ padding: "0.75rem 1rem", borderTop: "1px solid rgba(255,255,255,0.07)" }}>
           <button
             onClick={() => setChatOpen((v) => !v)}
@@ -344,6 +414,7 @@ export function TripPlanner({ tripId }: Props) {
             )}
           </button>
         </div>
+        )}
       </aside>
 
       {/* CHAT PANEL (right side, slides in) */}
@@ -513,7 +584,7 @@ export function TripPlanner({ tripId }: Props) {
       </aside>
 
       {/* ACCOMMODATION BADGE */}
-      {workspace.trip.accommodation_name && !chatOpen && (
+      {workspace.trip.accommodation_name && !chatOpen && !isAgentThinking && (
         <div style={{
           position: "absolute", top: "1.5rem", right: "1.5rem", zIndex: 10,
           background: "rgba(10, 15, 30, 0.9)", backdropFilter: "blur(20px)",
@@ -531,7 +602,7 @@ export function TripPlanner({ tripId }: Props) {
       )}
 
       {/* PLACE DETAIL PANEL */}
-      {selectedPlaceId && selectedMarker && (
+      {selectedPlaceId && selectedMarker && !isAgentThinking && (
         <div style={{
           position: "absolute", top: "1rem", right: "1rem", zIndex: 35,
           width: "340px", background: "rgba(10, 15, 30, 0.97)", backdropFilter: "blur(24px)",
