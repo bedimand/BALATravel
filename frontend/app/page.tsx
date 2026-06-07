@@ -13,9 +13,14 @@ export default function HomePage() {
           </div>
           <h1>BALA<span>Travel</span></h1>
         </div>
-        <Link href="/history" className="button-ghost">
-          Ver trips
-        </Link>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <Link href="/login" className="button-ghost">
+            Entrar
+          </Link>
+          <Link href="/signup" className="button-primary">
+            Criar conta
+          </Link>
+        </div>
       </header>
 
       <section className="hero-card hero-section">

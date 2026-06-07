@@ -3,17 +3,20 @@
 import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
+import { useRequireAuth } from "@/lib/use-require-auth";
 import type { UserProfile } from "@/lib/types";
 
 export function ProfilePanel() {
+  const authed = useRequireAuth();
   const [user, setUser] = useState<UserProfile | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!authed) return;
     api.me().then(setUser).catch((loadError) => {
       setError(loadError instanceof Error ? loadError.message : "Falha ao carregar perfil.");
     });
-  }, []);
+  }, [authed]);
 
   return (
     <section className="panel profile-panel">
@@ -28,7 +31,14 @@ export function ProfilePanel() {
           <p>
             Locale: {user.locale} | Moeda: {user.currency}
           </p>
-          <p>Modo local ativo. Todos os dados ficam salvos no banco local desta instalacao.</p>
+          <button
+            type="button"
+            className="button-secondary"
+            onClick={() => api.logout()}
+            style={{ marginTop: "1rem", alignSelf: "flex-start" }}
+          >
+            Sair
+          </button>
         </>
       ) : null}
     </section>

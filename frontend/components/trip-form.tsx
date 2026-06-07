@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { setOptions, importLibrary } from "@googlemaps/js-api-loader";
 
 import { api } from "@/lib/api";
+import { useRequireAuth } from "@/lib/use-require-auth";
 
 type Draft = {
   start_date: string;
@@ -61,6 +62,7 @@ const LANG_OPTIONS = ["pt", "en", "es", "fr", "it", "de"];
 
 export function TripForm() {
   const router = useRouter();
+  useRequireAuth();
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState<Draft>(INITIAL_DRAFT);

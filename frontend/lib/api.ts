@@ -9,6 +9,7 @@ import type {
   Place,
   ProposedChange,
   TodaySummary,
+  TokenPair,
   Trip,
   UserProfile,
   WorkspaceResponse
@@ -16,20 +17,50 @@ import type {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000/api";
 
+const ACCESS_TOKEN_KEY = "bala_access";
+const REFRESH_TOKEN_KEY = "bala_refresh";
+
+export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(ACCESS_TOKEN_KEY);
+}
+
+function setTokens(access: string, refresh: string): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(ACCESS_TOKEN_KEY, access);
+  window.localStorage.setItem(REFRESH_TOKEN_KEY, refresh);
+}
+
+function clearTokens(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(ACCESS_TOKEN_KEY);
+  window.localStorage.removeItem(REFRESH_TOKEN_KEY);
+}
+
 type RequestOptions = {
   method?: string;
   body?: unknown;
 };
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const token = getToken();
   const response = await fetch(`${API_URL}${path}`, {
     method: options.method ?? "GET",
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
     cache: "no-store"
   });
+
+  if (response.status === 401) {
+    clearTokens();
+    if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
+    throw new Error("Sessao expirada. Faca login novamente.");
+  }
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: "Request failed" }));
@@ -44,6 +75,22 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const api = {
+  signup: async (body: { name: string; email: string; password: string }) => {
+    const tokens = await request<TokenPair>("/auth/signup", { method: "POST", body });
+    setTokens(tokens.access_token, tokens.refresh_token);
+    return tokens;
+  },
+  login: async (body: { email: string; password: string }) => {
+    const tokens = await request<TokenPair>("/auth/login", { method: "POST", body });
+    setTokens(tokens.access_token, tokens.refresh_token);
+    return tokens;
+  },
+  logout: () => {
+    clearTokens();
+    if (typeof window !== "undefined") {
+      window.location.href = "/login";
+    }
+  },
   me: () => request<UserProfile>("/users/me"),
   createTrip: (body: Record<string, unknown>) => request<Trip>("/trips", { method: "POST", body }),
   listTrips: () => request<Trip[]>("/trips"),

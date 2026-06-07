@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { api } from "@/lib/api";
+import { useRequireAuth } from "@/lib/use-require-auth";
 import type { WorkspaceResponse, AgentThread, Decision, MapResponse } from "@/lib/types";
 import { AgentThinking } from "./agent-thinking";
 import { MapPanel } from "./map-panel";
@@ -20,6 +21,7 @@ const QUICK_PROMPTS = [
 ];
 
 export function TripPlanner({ tripId }: Props) {
+  useRequireAuth();
   const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeDay, setActiveDay] = useState<string | null>("all");

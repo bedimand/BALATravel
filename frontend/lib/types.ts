@@ -215,6 +215,13 @@ export type UserProfile = {
   currency: string;
 };
 
+export type TokenPair = {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  user: UserProfile;
+};
+
 export type ChatResponse = {
   message: string;
   proposed_changes: ProposedChange[];

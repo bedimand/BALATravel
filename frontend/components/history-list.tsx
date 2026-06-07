@@ -5,19 +5,22 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
+import { useRequireAuth } from "@/lib/use-require-auth";
 import type { Trip } from "@/lib/types";
 
 export function HistoryList() {
   const router = useRouter();
+  const authed = useRequireAuth();
   const [trips, setTrips] = useState<Trip[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!authed) return;
     api
       .listTrips()
       .then(setTrips)
       .catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Falha ao carregar viagens."));
-  }, []);
+  }, [authed]);
 
   return (
     <section className="panel" style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
