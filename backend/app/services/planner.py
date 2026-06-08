@@ -111,6 +111,7 @@ def build_map_payload(trip: Trip) -> dict:
                     "editorial_note": place.editorial_note if place else None,
                     "price_level": place.price_level if place else None,
                     "website": place.website if place else None,
+                    "google_place_id": place.google_place_id if place else None,
                     "curator_reasoning": item.curator_reasoning,
                 }
             )

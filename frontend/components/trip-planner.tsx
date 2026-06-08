@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { api } from "@/lib/api";
@@ -155,6 +156,13 @@ export function TripPlanner({ tripId }: Props) {
     [workspace, selectedPlaceId]
   );
 
+  // Itinerary is "ready to export" once it has at least one scheduled stop
+  // (markers other than the accommodation pin).
+  const hasItinerary = useMemo(
+    () => (workspace?.map.markers ?? []).some((m) => m.kind !== "accommodation" && m.date),
+    [workspace]
+  );
+
   async function sendChatMessage(message: string) {
     if (!message.trim() || chatBusy) return;
     setChatBusy(true);
@@ -227,6 +235,9 @@ export function TripPlanner({ tripId }: Props) {
           activeDay={activeDay}
           onPlaceClick={(id) => {
             setSelectedPlaceId(id);
+            // Chat and place detail are mutually exclusive — opening one closes
+            // the other so only a single panel is ever shown.
+            setChatOpen(false);
             // On mobile, opening a place detail should drop the itinerary sheet
             // so the detail sheet isn't fighting it for the screen.
             if (isMobile) setSheetOpen(false);
@@ -340,6 +351,24 @@ export function TripPlanner({ tripId }: Props) {
             ))}
           </div>
 
+          {/* Export / share — appears once the itinerary has stops and the agent
+              isn't mid-build. Links to the printable export & share page. */}
+          {hasItinerary && !isAgentThinking && (
+            <Link
+              href={`/trips/${tripId}/export`}
+              className="day-btn"
+              style={{
+                marginTop: "0.9rem", display: "flex", alignItems: "center", justifyContent: "center",
+                gap: "0.5rem", padding: "0.6rem 1rem", borderRadius: "0.9rem",
+                background: "rgba(0,229,255,0.1)", border: "1px solid rgba(0,229,255,0.35)",
+                color: "#00e5ff", textDecoration: "none", fontSize: "0.83rem", fontWeight: 700,
+                transition: "all 0.2s ease",
+              }}
+            >
+              <span>📤</span> Exportar / Compartilhar
+            </Link>
+          )}
+
         </div>
 
         {/* Itinerary body: the agenda timeline (enriched with place details).
@@ -351,7 +380,10 @@ export function TripPlanner({ tripId }: Props) {
             dates={dates}
             activeDay={activeDay}
             selectedPlaceId={selectedPlaceId}
-            onPlaceClick={(id) => setSelectedPlaceId(selectedPlaceId === id ? null : id)}
+            onPlaceClick={(id) => {
+              setSelectedPlaceId(selectedPlaceId === id ? null : id);
+              setChatOpen(false);
+            }}
             highlightIds={highlightIds}
             compact
           />
@@ -363,7 +395,11 @@ export function TripPlanner({ tripId }: Props) {
         {!isAgentThinking && (!isMobile || sheetOpen) && (
         <div style={{ padding: "0.75rem 1rem", borderTop: "1px solid rgba(255,255,255,0.07)" }}>
           <button
-            onClick={() => setChatOpen((v) => !v)}
+            onClick={() => {
+              setChatOpen((v) => !v);
+              // Only one panel at a time — opening the chat closes any place detail.
+              setSelectedPlaceId(null);
+            }}
             style={{
               width: "100%", padding: "0.75rem 1rem", borderRadius: "1rem",
               background: chatOpen ? "rgba(0,229,255,0.12)" : "rgba(255,255,255,0.05)",
@@ -397,7 +433,8 @@ export function TripPlanner({ tripId }: Props) {
         />
       )}
 
-      {/* CHAT PANEL — slides in from the right (desktop) or up from the bottom (mobile) */}
+      {/* CHAT PANEL — appears in place (no slide), one panel at a time */}
+      {chatOpen && (
       <aside style={
         isMobile
           ? {
@@ -408,9 +445,7 @@ export function TripPlanner({ tripId }: Props) {
               color: "white", display: "flex", flexDirection: "column",
               boxShadow: "0 -20px 60px -10px rgba(0,0,0,0.7)", overflow: "hidden",
               paddingBottom: "env(safe-area-inset-bottom)",
-              transform: chatOpen ? "translateY(0)" : "translateY(100%)",
-              transition: "transform 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
-              pointerEvents: chatOpen ? "auto" : "none",
+              animation: "fadeSlideUp 0.25s ease both",
             }
           : {
               position: "absolute", top: "1rem", right: "1rem", bottom: "1rem", zIndex: 25,
@@ -418,9 +453,7 @@ export function TripPlanner({ tripId }: Props) {
               borderRadius: "1.5rem", border: "1px solid rgba(255,255,255,0.08)", color: "white",
               display: "flex", flexDirection: "column", boxShadow: "0 25px 60px -10px rgba(0,0,0,0.6)",
               overflow: "hidden",
-              transform: chatOpen && !selectedPlaceId ? "translateX(0)" : "translateX(calc(100% + 1.5rem))",
-              transition: "transform 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
-              pointerEvents: chatOpen && !selectedPlaceId ? "auto" : "none",
+              animation: "fadeSlideUp 0.25s ease both",
             }
       }>
         {/* Chat header */}
@@ -590,6 +623,7 @@ export function TripPlanner({ tripId }: Props) {
           </p>
         </div>
       </aside>
+      )}
 
       {/* ACCOMMODATION BADGE */}
       {workspace.trip.accommodation_name && !chatOpen && !isAgentThinking && (

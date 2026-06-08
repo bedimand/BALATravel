@@ -222,6 +222,7 @@ class MapMarker(BaseModel):
     editorial_note: str | None = None
     price_level: int | None = None
     website: str | None = None
+    google_place_id: str | None = None
     curator_reasoning: str | None = None
 
 

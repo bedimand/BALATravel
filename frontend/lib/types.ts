@@ -99,6 +99,7 @@ export type MapResponse = {
     editorial_note?: string | null;
     price_level?: number | null;
     website?: string | null;
+    google_place_id?: string | null;
     curator_reasoning?: string | null;
   }>;
   routes: Array<{
@@ -225,6 +226,13 @@ export type TokenPair = {
 export type ChatResponse = {
   message: string;
   proposed_changes: ProposedChange[];
+};
+
+export type PublicTrip = {
+  destination: string;
+  start_date: string;
+  end_date: string;
+  itinerary: ItineraryVersion | null;
 };
 
 export type ProposedChange = {

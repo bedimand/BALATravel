@@ -8,6 +8,7 @@ import type {
   MapResponse,
   Place,
   ProposedChange,
+  PublicTrip,
   TodaySummary,
   TokenPair,
   Trip,
@@ -74,6 +75,18 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return response.json() as Promise<T>;
 }
 
+// Unauthenticated GET for public endpoints (e.g. shared itineraries). Unlike
+// request(), this never attaches a token nor redirects to /login on 401 — a
+// public visitor has no session and must just see a "not found" message.
+async function publicRequest<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, { cache: "no-store" });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ detail: "Request failed" }));
+    throw new Error(payload.detail ?? "Request failed");
+  }
+  return response.json() as Promise<T>;
+}
+
 export const api = {
   signup: async (body: { name: string; email: string; password: string }) => {
     const tokens = await request<TokenPair>("/auth/signup", { method: "POST", body });
@@ -137,5 +150,6 @@ export const api = {
   rebuildPlanFromSelection: (tripId: string | number) =>
     request<BackgroundRunResponse>(`/trips/${tripId}/workflow/rebuild-plan`, { method: "POST" }),
   getToday: (tripId: string | number) => request<TodaySummary | null>(`/trips/${tripId}/today`),
-  getAgentStatus: (tripId: string | number) => request<AgentStatusResponse>(`/trips/${tripId}/agent-status`)
+  getAgentStatus: (tripId: string | number) => request<AgentStatusResponse>(`/trips/${tripId}/agent-status`),
+  getPublicTrip: (token: string) => publicRequest<PublicTrip>(`/share/${token}`)
 };
