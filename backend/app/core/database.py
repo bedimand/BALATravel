@@ -7,9 +7,23 @@ from app.core.config import get_settings
 
 
 settings = get_settings()
-connect_args = {"check_same_thread": False, "timeout": 15.0} if settings.database_url.startswith("sqlite") else {}
+
+
+def _normalize_db_url(url: str) -> str:
+    # Render/Heroku hand out "postgres://" or "postgresql://" URLs, but we use the
+    # psycopg v3 driver, which SQLAlchemy addresses as "postgresql+psycopg://".
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
+database_url = _normalize_db_url(settings.database_url)
+is_sqlite = database_url.startswith("sqlite")
+connect_args = {"check_same_thread": False, "timeout": 15.0} if is_sqlite else {}
 engine = create_engine(
-    settings.database_url,
+    database_url,
     connect_args=connect_args,
     future=True,
     # Background workflow/agent threads each hold a session while doing slow LLM
@@ -23,7 +37,7 @@ engine = create_engine(
     pool_pre_ping=True,
 )
 
-if settings.database_url.startswith("sqlite"):
+if is_sqlite:
     @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
@@ -39,7 +53,7 @@ class Base(DeclarativeBase):
 
 
 def ensure_sqlite_schema() -> None:
-    if not settings.database_url.startswith("sqlite"):
+    if not is_sqlite:
         return
 
     with engine.begin() as connection:

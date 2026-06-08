@@ -1,15 +1,16 @@
 # Deploying BALATravel
 
-Both the backend (FastAPI) and frontend (Next.js) deploy to **Render** from this
-one repo, as two web services defined in [`render.yaml`](./render.yaml).
+The backend (FastAPI), frontend (Next.js), and a managed Postgres database all
+deploy to **Render** from this one repo, defined in [`render.yaml`](./render.yaml).
 
-| Service | Render name | Runtime | Notes |
-|---------|-------------|---------|-------|
-| Backend (FastAPI) | `balatravel-api` | Python | Persistent process — runs the background workflow threads; stores data in SQLite (ephemeral on free tier, see §3) |
-| Frontend (Next.js) | `balatravel-web` | Node | Runs `next start` (server-rendered `/trips/[id]` needs a live Node server) |
+| Component | Render name | Type | Notes |
+|-----------|-------------|------|-------|
+| Backend (FastAPI) | `balatravel-api` | Web (Python) | Persistent process — runs the background workflow threads |
+| Frontend (Next.js) | `balatravel-web` | Web (Node) | Runs `next start` (server-rendered `/trips/[id]` needs a live Node server) |
+| Database | `balatravel-db` | Postgres | Managed; persists across deploys (free tier expires in 30 days, see §3) |
 
-Both run on Render's **free tier** (no cost). See §3 for the data-persistence
-trade-off.
+Everything runs on Render's **free tier** (no cost). See §3 for the database
+caveat.
 
 > **Why one host for both?** Render runs persistent Node *and* Python services,
 > so a single Blueprint deploys both together — one dashboard, one repo. (Netlify
@@ -23,8 +24,10 @@ trade-off.
 
 1. Push this repo to GitHub.
 2. Render Dashboard → **New → Blueprint** → connect this repo. Render reads
-   `render.yaml` and proposes **both** services (`balatravel-api` and
-   `balatravel-web`).
+   `render.yaml` and proposes the two web services (`balatravel-api`,
+   `balatravel-web`) plus the Postgres database (`balatravel-db`). The database's
+   connection string is injected into the backend's `DATABASE_URL` automatically —
+   you don't set it by hand.
 3. It will prompt for the env vars marked `sync: false` (they're intentionally
    not in the repo). You can leave the two cross-reference URLs blank for now and
    set them in step 2 — fill in the rest:
@@ -60,33 +63,31 @@ setup — both URLs must be **public** ones, and CORS must allow the frontend.
 
 ---
 
-## 3. Database — ephemeral on the free tier (read this)
+## 3. Database — managed Postgres (read this)
 
-This Blueprint runs on Render's **free tier**, which has **no persistent disk**.
-The backend stores data in SQLite at `/tmp/balatravel.db`, which is **wiped on
-every deploy/restart** — all accounts and trips reset. The schema auto-creates on
-boot, so the app always works; it just starts empty each time. This is fine for a
-demo or class submission.
+The Blueprint provisions a managed Postgres database (`balatravel-db`) and injects
+its connection string into the backend's `DATABASE_URL`. Data **persists across
+deploys and restarts** — accounts and trips stick around. The schema auto-creates
+on first boot (`Base.metadata.create_all`). The app rewrites Render's
+`postgres://` URL to the `postgresql+psycopg://` form the driver expects, so no
+manual URL editing is needed.
 
-> Free Render services also **sleep after ~15 min idle**; the first request after
-> waking takes ~30–50s (and waking can also reset `/tmp`). Applies to both the API
-> and the web service.
+> ⚠️ **Render's free Postgres tier is deleted ~30 days after creation** (Render
+> emails a warning first). For a project that must outlive a month:
+> - **Upgrade `balatravel-db`** to a paid plan in the Render dashboard, or
+> - **Switch to an external free Postgres** (Neon / Supabase, which don't expire):
+>   create a database there, remove the `databases:` block + the `fromDatabase`
+>   wiring from `render.yaml`, and set `DATABASE_URL` on `balatravel-api` to that
+>   provider's connection string. No code change — the driver and URL handling are
+>   already in place.
 
-**To keep data permanently** (optional upgrade), pick one:
+> Free Render **web services** also sleep after ~15 min idle (first request after
+> waking takes ~30–50s). The database does not sleep, so data is safe; only the
+> first request is slow.
 
-- **Persistent disk (paid).** In `render.yaml`, on `balatravel-api` set
-  `plan: starter` (~$7/mo), add a disk and point SQLite at it:
-  ```yaml
-      disk:
-        name: balatravel-data
-        mountPath: /var/data
-        sizeGB: 1
-  ```
-  and change `DATABASE_URL` to `sqlite:////var/data/balatravel.db`.
-- **Free hosted Postgres.** Create a free database on Neon or Supabase, set
-  `DATABASE_URL` to its connection string (`postgresql+psycopg://...`), and add
-  the driver to `backend/pyproject.toml` (`psycopg[binary]`). Stays on the free
-  tier and persists. (Small change — ask and I'll wire it.)
+> **Local development** still uses SQLite by default (`sqlite:///./balatravel.db`
+> from `.env`) — the Postgres setup only applies where `DATABASE_URL` points at
+> Postgres. Both paths are supported by the same code.
 
 ---
 
@@ -104,18 +105,21 @@ demo or class submission.
   the frontend origin (check `https`, no trailing slash).
 - **Frontend calls `localhost:8000`** → `NEXT_PUBLIC_API_URL` wasn't set before
   the frontend build; set it and redeploy `balatravel-web`.
-- **Data gone after a redeploy** → expected on the free tier (ephemeral SQLite);
-  see §3 to make it persistent.
-- **First request very slow** → free service was asleep; it wakes in ~30–50s.
+- **Data gone after ~30 days** → the free Postgres tier was deleted; see §3 to
+  upgrade or move to an external Postgres.
+- **First request very slow** → the free web service was asleep; it wakes in
+  ~30–50s (the database itself does not sleep).
+- **Backend won't start / DB connection errors** → confirm `balatravel-db`
+  finished provisioning before the backend deployed; redeploy `balatravel-api`.
 
 ---
 
 ## Environment variable reference
 
-**Backend (`balatravel-api`):** `DATABASE_URL`, `SECRET_KEY`, `CORS_ORIGINS`,
-`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`, `SERPAPI_API_KEY`,
-`GOOGLE_ROUTES_API_KEY`, `OPENWEATHER_API_KEY`, `OPENTRIPMAP_API_KEY`.
-See [`.env.example`](./.env.example).
+**Backend (`balatravel-api`):** `DATABASE_URL` (auto-injected from
+`balatravel-db`), `SECRET_KEY`, `CORS_ORIGINS`, `OPENAI_API_KEY`,
+`OPENAI_BASE_URL`, `OPENAI_MODEL`, `SERPAPI_API_KEY`, `GOOGLE_ROUTES_API_KEY`,
+`OPENWEATHER_API_KEY`, `OPENTRIPMAP_API_KEY`. See [`.env.example`](./.env.example).
 
 **Frontend (`balatravel-web`):** `NEXT_PUBLIC_API_URL`,
 `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`.
