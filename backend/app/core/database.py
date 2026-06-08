@@ -8,7 +8,20 @@ from app.core.config import get_settings
 
 settings = get_settings()
 connect_args = {"check_same_thread": False, "timeout": 15.0} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, connect_args=connect_args, future=True)
+engine = create_engine(
+    settings.database_url,
+    connect_args=connect_args,
+    future=True,
+    # Background workflow/agent threads each hold a session while doing slow LLM
+    # work, and the trip page polls frequently; the default pool (5 + 10) drains
+    # and times out. Give it real headroom, drop dead connections (Render closes
+    # idle TCP), and recycle long-lived ones.
+    pool_size=20,
+    max_overflow=40,
+    pool_timeout=30,
+    pool_recycle=1800,
+    pool_pre_ping=True,
+)
 
 if settings.database_url.startswith("sqlite"):
     @event.listens_for(engine, "connect")

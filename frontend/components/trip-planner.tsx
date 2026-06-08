@@ -81,7 +81,7 @@ export function TripPlanner({ tripId }: Props) {
       pollRef.current = setInterval(async () => {
         await loadWorkspace();
         await loadThread();
-      }, 2000);
+      }, 3500);
     } else {
       if (pollRef.current) clearInterval(pollRef.current);
     }
