@@ -138,6 +138,14 @@ class TravelProvider:
         try:
             payload = self._serpapi_request(params)
             local_results = payload.get("local_results") or []
+            # A specific query that resolves to a single famous entity (a named
+            # beach, mall, or landmark) comes back under place_results as one
+            # object instead of a local_results list. Without this fallback the
+            # city's most recognizable anchors are silently dropped.
+            if not local_results:
+                single = payload.get("place_results")
+                if single:
+                    local_results = [single]
         except Exception as exc:
             raise ProviderIntegrationError("Live place lookup failed by interest.") from exc
             

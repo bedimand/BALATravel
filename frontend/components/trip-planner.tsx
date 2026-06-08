@@ -11,6 +11,20 @@ import { TripTimeline } from "./trip-timeline";
 
 type Props = { tripId: string };
 
+// Phones get a bottom-sheet layout instead of the desktop side panels.
+// Desktop-first default (false) keeps SSR output stable; corrects on mount.
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const update = () => setIsMobile(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return isMobile;
+}
+
 const QUICK_PROMPTS = [
   "Adicione mais restaurantes ao roteiro",
   "Reduza os deslocamentos do dia 2",
@@ -22,6 +36,7 @@ const QUICK_PROMPTS = [
 
 export function TripPlanner({ tripId }: Props) {
   useRequireAuth();
+  const isMobile = useIsMobile();
   const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeDay, setActiveDay] = useState<string | null>("all");
@@ -29,6 +44,9 @@ export function TripPlanner({ tripId }: Props) {
   const [highlightIds, setHighlightIds] = useState<Set<string>>(new Set());
   const prevMarkerIdsRef = useRef<Set<string> | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // On mobile the itinerary lives in a bottom sheet that can be collapsed to a
+  // peek so the map underneath stays usable. Ignored on desktop.
+  const [sheetOpen, setSheetOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
@@ -207,7 +225,12 @@ export function TripPlanner({ tripId }: Props) {
           map={workspace.map}
           selectedPlaceId={selectedPlaceId}
           activeDay={activeDay}
-          onPlaceClick={(id) => setSelectedPlaceId(id)}
+          onPlaceClick={(id) => {
+            setSelectedPlaceId(id);
+            // On mobile, opening a place detail should drop the itinerary sheet
+            // so the detail sheet isn't fighting it for the screen.
+            if (isMobile) setSheetOpen(false);
+          }}
           baseLat={workspace.trip.accommodation_lat || 0}
           baseLng={workspace.trip.accommodation_lng || 0}
         />
@@ -226,16 +249,43 @@ export function TripPlanner({ tripId }: Props) {
         </div>
       )}
 
-      {/* LEFT SIDEBAR */}
-      <aside style={{
-        position: "absolute", top: "1rem", left: "1rem", bottom: "1rem", zIndex: 30,
-        width: "360px", background: "rgba(10, 15, 30, 0.85)", backdropFilter: "blur(24px)",
-        borderRadius: "1.5rem", border: "1px solid rgba(255,255,255,0.08)", color: "white",
-        display: "flex", flexDirection: "column", boxShadow: "0 25px 60px -10px rgba(0,0,0,0.6)",
-        overflow: "hidden", transition: "box-shadow 0.3s"
-      }}>
+      {/* LEFT SIDEBAR (desktop) / ITINERARY BOTTOM SHEET (mobile) */}
+      <aside style={
+        isMobile
+          ? {
+              position: "absolute", left: 0, right: 0, bottom: 0, zIndex: 30,
+              // Collapsed = peek (header + day filters); expanded = most of the screen.
+              height: sheetOpen ? "80dvh" : "auto", maxHeight: "80dvh",
+              background: "rgba(10, 15, 30, 0.92)", backdropFilter: "blur(24px)",
+              borderRadius: "1.5rem 1.5rem 0 0", borderTop: "1px solid rgba(255,255,255,0.08)",
+              color: "white", display: "flex", flexDirection: "column",
+              boxShadow: "0 -20px 60px -10px rgba(0,0,0,0.7)", overflow: "hidden",
+              transition: "height 0.3s cubic-bezier(0.4,0,0.2,1)",
+              paddingBottom: "env(safe-area-inset-bottom)",
+            }
+          : {
+              position: "absolute", top: "1rem", left: "1rem", bottom: "1rem", zIndex: 30,
+              width: "360px", background: "rgba(10, 15, 30, 0.85)", backdropFilter: "blur(24px)",
+              borderRadius: "1.5rem", border: "1px solid rgba(255,255,255,0.08)", color: "white",
+              display: "flex", flexDirection: "column", boxShadow: "0 25px 60px -10px rgba(0,0,0,0.6)",
+              overflow: "hidden", transition: "box-shadow 0.3s",
+            }
+      }>
+        {/* Drag-handle / tap target to expand-collapse the sheet (mobile only) */}
+        {isMobile && (
+          <button
+            onClick={() => setSheetOpen((v) => !v)}
+            aria-label={sheetOpen ? "Recolher roteiro" : "Expandir roteiro"}
+            style={{
+              border: "none", background: "transparent", padding: "0.6rem 0 0.2rem",
+              display: "flex", justifyContent: "center", flexShrink: 0,
+            }}
+          >
+            <span style={{ width: "40px", height: "4px", borderRadius: "2px", background: "rgba(255,255,255,0.25)" }} />
+          </button>
+        )}
         {/* Header */}
-        <div style={{ padding: "1.25rem 1.5rem", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
+        <div style={{ padding: isMobile ? "0.5rem 1.25rem 1rem" : "1.25rem 1.5rem", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div>
               <h1 style={{ fontSize: "1.3rem", fontWeight: 800, margin: 0, letterSpacing: "-0.3px" }}>
@@ -278,8 +328,10 @@ export function TripPlanner({ tripId }: Props) {
 
         </div>
 
-        {/* Itinerary body: the agenda timeline (enriched with place details) */}
-        <div style={{ flex: 1, overflowY: "auto" }}>
+        {/* Itinerary body: the agenda timeline (enriched with place details).
+            On mobile this only renders when the sheet is expanded. */}
+        {(!isMobile || sheetOpen) && (
+        <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
           <TripTimeline
             markers={workspace.map.markers}
             dates={dates}
@@ -290,9 +342,11 @@ export function TripPlanner({ tripId }: Props) {
             compact
           />
         </div>
+        )}
 
-        {/* Chat toggle button (hidden while the agent is building) */}
-        {!isAgentThinking && (
+        {/* Chat toggle button (hidden while the agent is building, and on the
+            mobile peek where space is tight) */}
+        {!isAgentThinking && (!isMobile || sheetOpen) && (
         <div style={{ padding: "0.75rem 1rem", borderTop: "1px solid rgba(255,255,255,0.07)" }}>
           <button
             onClick={() => setChatOpen((v) => !v)}
@@ -318,17 +372,32 @@ export function TripPlanner({ tripId }: Props) {
         )}
       </aside>
 
-      {/* CHAT PANEL (right side, slides in) */}
-      <aside style={{
-        position: "absolute", top: "1rem", right: "1rem", bottom: "1rem", zIndex: 25,
-        width: "380px", background: "rgba(10, 15, 30, 0.92)", backdropFilter: "blur(24px)",
-        borderRadius: "1.5rem", border: "1px solid rgba(255,255,255,0.08)", color: "white",
-        display: "flex", flexDirection: "column", boxShadow: "0 25px 60px -10px rgba(0,0,0,0.6)",
-        overflow: "hidden",
-        transform: chatOpen && !selectedPlaceId ? "translateX(0)" : "translateX(calc(100% + 1.5rem))",
-        transition: "transform 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
-        pointerEvents: chatOpen && !selectedPlaceId ? "auto" : "none"
-      }}>
+      {/* CHAT PANEL — slides in from the right (desktop) or up from the bottom (mobile) */}
+      <aside style={
+        isMobile
+          ? {
+              position: "absolute", left: 0, right: 0, bottom: 0, zIndex: 40,
+              height: "85dvh", maxHeight: "85dvh",
+              background: "rgba(10, 15, 30, 0.96)", backdropFilter: "blur(24px)",
+              borderRadius: "1.5rem 1.5rem 0 0", borderTop: "1px solid rgba(255,255,255,0.08)",
+              color: "white", display: "flex", flexDirection: "column",
+              boxShadow: "0 -20px 60px -10px rgba(0,0,0,0.7)", overflow: "hidden",
+              paddingBottom: "env(safe-area-inset-bottom)",
+              transform: chatOpen ? "translateY(0)" : "translateY(100%)",
+              transition: "transform 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
+              pointerEvents: chatOpen ? "auto" : "none",
+            }
+          : {
+              position: "absolute", top: "1rem", right: "1rem", bottom: "1rem", zIndex: 25,
+              width: "380px", background: "rgba(10, 15, 30, 0.92)", backdropFilter: "blur(24px)",
+              borderRadius: "1.5rem", border: "1px solid rgba(255,255,255,0.08)", color: "white",
+              display: "flex", flexDirection: "column", boxShadow: "0 25px 60px -10px rgba(0,0,0,0.6)",
+              overflow: "hidden",
+              transform: chatOpen && !selectedPlaceId ? "translateX(0)" : "translateX(calc(100% + 1.5rem))",
+              transition: "transform 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
+              pointerEvents: chatOpen && !selectedPlaceId ? "auto" : "none",
+            }
+      }>
         {/* Chat header */}
         <div style={{ padding: "1.25rem 1.5rem", borderBottom: "1px solid rgba(255,255,255,0.07)", display: "flex", alignItems: "center", gap: "0.8rem" }}>
           <span style={{ fontSize: "1.4rem" }}>🤖</span>
@@ -340,6 +409,19 @@ export function TripPlanner({ tripId }: Props) {
             <span style={{ fontSize: "0.65rem", color: "#00e5ff", animation: "pulse 1.5s infinite", fontWeight: 700 }}>
               Pensando...
             </span>
+          )}
+          {isMobile && (
+            <button
+              className="close-btn"
+              onClick={() => setChatOpen(false)}
+              aria-label="Fechar chat"
+              style={{
+                background: "rgba(255,255,255,0.05)", border: "none", color: "white",
+                cursor: "pointer", width: "32px", height: "32px", borderRadius: "50%",
+                display: "grid", placeItems: "center", fontSize: "1.1rem", flexShrink: 0,
+                transition: "background 0.2s",
+              }}
+            >×</button>
           )}
         </div>
 
@@ -502,17 +584,30 @@ export function TripPlanner({ tripId }: Props) {
         </div>
       )}
 
-      {/* PLACE DETAIL PANEL */}
+      {/* PLACE DETAIL PANEL — top-right card (desktop) / bottom sheet (mobile) */}
       {selectedPlaceId && selectedMarker && !isAgentThinking && (
-        <div style={{
-          position: "absolute", top: "1rem", right: "1rem", zIndex: 35,
-          width: "340px", background: "rgba(10, 15, 30, 0.97)", backdropFilter: "blur(24px)",
-          borderRadius: "1.5rem", color: "white", overflow: "hidden",
-          boxShadow: "0 30px 60px -12px rgba(0,0,0,0.8)",
-          display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 2rem)",
-          border: "1px solid rgba(255,255,255,0.1)",
-          animation: "fadeSlideUp 0.25s ease both"
-        }}>
+        <div style={
+          isMobile
+            ? {
+                position: "absolute", left: 0, right: 0, bottom: 0, zIndex: 45,
+                background: "rgba(10, 15, 30, 0.98)", backdropFilter: "blur(24px)",
+                borderRadius: "1.5rem 1.5rem 0 0", color: "white", overflow: "hidden",
+                boxShadow: "0 -20px 60px -12px rgba(0,0,0,0.8)",
+                display: "flex", flexDirection: "column", maxHeight: "88dvh",
+                borderTop: "1px solid rgba(255,255,255,0.1)",
+                paddingBottom: "env(safe-area-inset-bottom)",
+                animation: "fadeSlideUp 0.25s ease both",
+              }
+            : {
+                position: "absolute", top: "1rem", right: "1rem", zIndex: 35,
+                width: "340px", background: "rgba(10, 15, 30, 0.97)", backdropFilter: "blur(24px)",
+                borderRadius: "1.5rem", color: "white", overflow: "hidden",
+                boxShadow: "0 30px 60px -12px rgba(0,0,0,0.8)",
+                display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 2rem)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                animation: "fadeSlideUp 0.25s ease both",
+              }
+        }>
           {selectedMarker.image_url && (
             <div style={{ position: "relative", flexShrink: 0 }}>
               <img

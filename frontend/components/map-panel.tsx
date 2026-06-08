@@ -128,6 +128,9 @@ export function MapPanel({ map, selectedPlaceId, onPlaceClick, activeDay, baseLa
           mapId: process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID || "DEMO_MAP_ID",
           disableDefaultUI: true,
           zoomControl: true,
+          // "greedy" lets one-finger drag pan the map even when it's behind
+          // overlay sheets — otherwise mobile users get a "use two fingers" hint.
+          gestureHandling: "greedy",
         });
       }
 
