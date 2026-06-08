@@ -825,11 +825,15 @@ function DecisionCard({
   markers,
   decideBusy,
   onDecide,
+  inline = false,
 }: {
   decision: Decision;
   markers: MapResponse["markers"];
   decideBusy: boolean;
   onDecide: (action: "approve" | "reject") => void;
+  // inline = rendered inside the chat thread (no fixed positioning); otherwise
+  // it floats bottom-right as a standalone popup.
+  inline?: boolean;
 }) {
   const proposal: ProposalChange = decision.payload_json?.proposal ?? {};
   const payload = (proposal.payload ?? {}) as Record<string, unknown>;
@@ -915,17 +919,29 @@ function DecisionCard({
 
   return (
     <div
-      style={{
-        position: "absolute", right: "1.5rem", bottom: "1.5rem", zIndex: 100,
-        width: "min(380px, calc(100% - 3rem))",
-        background: "rgba(18, 26, 44, 0.97)",
-        border: "1px solid rgba(0,229,255,0.25)",
-        borderRadius: "1.1rem",
-        boxShadow: "0 20px 45px -15px rgba(0,0,0,0.7)",
-        padding: "1.1rem 1.2rem",
-        color: "white",
-        animation: "fadeSlideUp 0.25s ease both",
-      }}
+      style={
+        inline
+          ? {
+              width: "100%",
+              background: "rgba(0,229,255,0.06)",
+              border: "1px solid rgba(0,229,255,0.3)",
+              borderRadius: "1.1rem",
+              padding: "1.1rem 1.2rem",
+              color: "white",
+              animation: "fadeSlideUp 0.25s ease both",
+            }
+          : {
+              position: "absolute", right: "1.5rem", bottom: "1.5rem", zIndex: 100,
+              width: "min(380px, calc(100% - 3rem))",
+              background: "rgba(18, 26, 44, 0.97)",
+              border: "1px solid rgba(0,229,255,0.25)",
+              borderRadius: "1.1rem",
+              boxShadow: "0 20px 45px -15px rgba(0,0,0,0.7)",
+              padding: "1.1rem 1.2rem",
+              color: "white",
+              animation: "fadeSlideUp 0.25s ease both",
+            }
+      }
     >
       <div style={{ display: "flex", alignItems: "center", gap: "0.45rem", marginBottom: "0.7rem" }}>
         <span style={{ fontSize: "1rem" }}>✨</span>

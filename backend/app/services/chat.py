@@ -68,9 +68,15 @@ def build_chat_response(trip: Trip, itinerary: ItineraryVersion | None, places: 
         "- Se o usuario fizer uma pergunta, pedir uma opiniao, agradecer ou apenas conversar "
         '(ex: "qual o melhor dia para a praia?", "obrigado", "o que voce acha do dia 2?"), '
         'responda em "assistant_message" e deixe "proposed_changes" como lista VAZIA []. NAO invente mudancas.\n'
-        "- So inclua um item em \"proposed_changes\" quando o usuario claramente pedir para MODIFICAR o roteiro "
-        '(ex: "troque o restaurante", "reorganize o dia 2", "adicione um museu"). '
-        'Nesse caso, escreva tambem uma "assistant_message" explicando em linguagem natural o que voce esta propondo.\n\n'
+        "- REGRA CRITICA: se a mensagem do usuario pedir, sugerir ou implicar QUALQUER alteracao no roteiro "
+        "(verbos como adicionar, incluir, trocar, substituir, remover, tirar, reorganizar, reduzir, otimizar, "
+        "ajustar, mudar, antecipar, atrasar, deixar mais leve/tranquilo, etc.), voce OBRIGATORIAMENTE deve "
+        'retornar pelo menos um item em "proposed_changes" com o payload completo e valido. '
+        "NUNCA descreva uma mudanca apenas no texto sem incluir o objeto correspondente em \"proposed_changes\" — "
+        "isso e considerado uma falha. Se voce mencionar uma mudanca na assistant_message, ela TEM que existir tambem "
+        'em "proposed_changes".\n'
+        "- Na duvida entre conversar e modificar, quando a mensagem contiver um verbo de acao sobre o roteiro, "
+        "trate como MODIFICACAO e gere a proposta.\n\n"
         "Tipos de mudanca:\n"
         '- "update_item": ajustar UM item existente. payload: {"item_id": 123, "title": "...", "notes": "...", "start_time": "09:30:00", "end_time": "11:00:00"}\n'
         '- "set_day": redefinir um dia INTEIRO. VOCE decide a ordem e os horarios e envia a lista completa. '
