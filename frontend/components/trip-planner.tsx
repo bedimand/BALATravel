@@ -271,22 +271,28 @@ export function TripPlanner({ tripId }: Props) {
               overflow: "hidden", transition: "box-shadow 0.3s",
             }
       }>
-        {/* Drag-handle / tap target to expand-collapse the sheet (mobile only) */}
+        {/* Drag-handle to expand-collapse the sheet (mobile only). Big tap target. */}
         {isMobile && (
           <button
             onClick={() => setSheetOpen((v) => !v)}
             aria-label={sheetOpen ? "Recolher roteiro" : "Expandir roteiro"}
             style={{
-              border: "none", background: "transparent", padding: "0.6rem 0 0.2rem",
-              display: "flex", justifyContent: "center", flexShrink: 0,
+              border: "none", background: "transparent", padding: "0.85rem 0 0.5rem",
+              display: "flex", justifyContent: "center", flexShrink: 0, width: "100%", cursor: "pointer",
             }}
           >
-            <span style={{ width: "40px", height: "4px", borderRadius: "2px", background: "rgba(255,255,255,0.25)" }} />
+            <span style={{ width: "44px", height: "5px", borderRadius: "3px", background: "rgba(255,255,255,0.35)" }} />
           </button>
         )}
-        {/* Header */}
-        <div style={{ padding: isMobile ? "0.5rem 1.25rem 1rem" : "1.25rem 1.5rem", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        {/* Header. On mobile the whole header row toggles the sheet open/closed. */}
+        <div style={{ padding: isMobile ? "0 1.25rem 1rem" : "1.25rem 1.5rem", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
+          <div
+            onClick={isMobile ? () => setSheetOpen((v) => !v) : undefined}
+            style={{
+              display: "flex", justifyContent: "space-between", alignItems: "flex-start",
+              gap: "0.75rem", cursor: isMobile ? "pointer" : "default",
+            }}
+          >
             <div>
               <h1 style={{ fontSize: "1.3rem", fontWeight: 800, margin: 0, letterSpacing: "-0.3px" }}>
                 {workspace.trip.destination}
@@ -295,15 +301,23 @@ export function TripPlanner({ tripId }: Props) {
                 {workspace.trip.start_date} — {workspace.trip.end_date}
               </p>
             </div>
-            {isAgentThinking && (
-              <span style={{
-                fontSize: "0.7rem", background: "rgba(0,229,255,0.15)", color: "#00e5ff",
-                padding: "0.3rem 0.7rem", borderRadius: "1rem", fontWeight: 700,
-                animation: "pulse 1.5s ease infinite"
-              }}>
-                IA processando...
-              </span>
-            )}
+            <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", flexShrink: 0 }}>
+              {isAgentThinking && (
+                <span style={{
+                  fontSize: "0.7rem", background: "rgba(0,229,255,0.15)", color: "#00e5ff",
+                  padding: "0.3rem 0.7rem", borderRadius: "1rem", fontWeight: 700,
+                  animation: "pulse 1.5s ease infinite"
+                }}>
+                  IA processando...
+                </span>
+              )}
+              {isMobile && (
+                <span style={{
+                  fontSize: "1rem", opacity: 0.6, transition: "transform 0.3s ease",
+                  transform: sheetOpen ? "rotate(180deg)" : "rotate(0deg)", lineHeight: 1,
+                }}>⌃</span>
+              )}
+            </div>
           </div>
 
           {/* Day filters */}
@@ -371,6 +385,17 @@ export function TripPlanner({ tripId }: Props) {
         </div>
         )}
       </aside>
+
+      {/* MOBILE BACKDROP — tap anywhere outside a sheet to dismiss it */}
+      {isMobile && (chatOpen || (selectedPlaceId && selectedMarker && !isAgentThinking)) && (
+        <div
+          onClick={() => { setChatOpen(false); setSelectedPlaceId(null); }}
+          style={{
+            position: "absolute", inset: 0, zIndex: 38,
+            background: "rgba(0,0,0,0.45)", animation: "fadeIn 0.2s ease both",
+          }}
+        />
+      )}
 
       {/* CHAT PANEL — slides in from the right (desktop) or up from the bottom (mobile) */}
       <aside style={
