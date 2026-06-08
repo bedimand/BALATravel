@@ -29,10 +29,10 @@ services:
       - key: DATABASE_URL
         value: sqlite:////tmp/balatravel.db
       # Must list the frontend's PUBLIC URL (browser -> backend is cross-origin).
-      # Set this to the balatravel-web URL after the first deploy, e.g.
-      #   https://balatravel-web.onrender.com,http://localhost:3000
+      # NOTE: this var is Blueprint-managed, so this value is the source of truth —
+      # editing it in the Render dashboard gets reverted on sync. Change it here.
       - key: CORS_ORIGINS
-        value: https://YOUR-FRONTEND.onrender.com,http://localhost:3000
+        value: https://balatravel-web.onrender.com,http://localhost:3000
       # Auto-generated strong secret for signing JWTs.
       - key: SECRET_KEY
         generateValue: true
