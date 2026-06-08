@@ -1,3 +1,4 @@
+import { kindLabel } from "@/lib/format";
 import type { Place } from "@/lib/types";
 
 type Props = {
@@ -27,7 +28,7 @@ export function PlacesPanel({ places, enabled }: Props) {
               <div className="decision-item__body">
                 <strong>{place.name}</strong>
                 <span>
-                  {place.category} - nota {place.rating}
+                  {kindLabel(place.category)} - nota {place.rating}
                 </span>
                 <p>{place.summary || "Sem resumo adicional."}</p>
               </div>

@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 
 import { api } from "@/lib/api";
+import { formatDateBR } from "@/lib/format";
 import type { ItineraryItem, ItineraryVersion } from "@/lib/types";
 
 type Props = {
@@ -61,7 +62,7 @@ export function CalendarPanel({ tripId, itinerary, onItemSaved }: Props) {
       {Object.entries(grouped).map(([date, items]) => (
         <div key={date} className="day-column">
           <header>
-            <strong>{date}</strong>
+            <strong>{formatDateBR(date)}</strong>
           </header>
           {items.map((item) => (
             <form

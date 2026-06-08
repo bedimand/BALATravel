@@ -1,3 +1,4 @@
+import { versionStatusLabel } from "@/lib/format";
 import type { ItineraryVersion } from "@/lib/types";
 
 type Props = {
@@ -25,7 +26,7 @@ export function VersionHistoryPanel({ versions, busyAction, onRollback }: Props)
             <article key={version.id} className="history-entry">
               <div className="history-entry__top">
                 <strong>Versao {version.version}</strong>
-                <span>{version.status === "active" ? "ativa" : "arquivada"}</span>
+                <span>{versionStatusLabel(version.status)}</span>
               </div>
               <p>{version.assistant_summary || "Sem resumo."}</p>
               {version.status !== "active" ? (

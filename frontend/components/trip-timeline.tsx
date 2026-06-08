@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { formatDateBR, kindLabel } from "@/lib/format";
 import type { MapResponse } from "@/lib/types";
 
 // Mirror of map-panel.tsx DAY_COLORS so a day's timeline accent matches its map pins.
@@ -96,7 +97,7 @@ export function TripTimeline({
               background: day.color, boxShadow: `0 0 10px ${day.color}66`, flexShrink: 0,
             }} />
             <strong style={{ fontSize: "0.82rem", letterSpacing: "0.3px" }}>Dia {day.dayNumber}</strong>
-            <span style={{ fontSize: "0.68rem", opacity: 0.4, fontWeight: 600 }}>{day.date}</span>
+            <span style={{ fontSize: "0.68rem", opacity: 0.4, fontWeight: 600 }}>{formatDateBR(day.date)}</span>
             <span style={{ marginLeft: "auto", fontSize: "0.65rem", opacity: 0.4 }}>
               {day.items.length} {day.items.length === 1 ? "parada" : "paradas"}
             </span>
@@ -174,7 +175,7 @@ export function TripTimeline({
                         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.2rem", flexWrap: "wrap" }}>
                           <span style={{
                             fontSize: "0.6rem", opacity: 0.45, textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 600,
-                          }}>{marker.kind}</span>
+                          }}>{kindLabel(marker.kind)}</span>
                           {marker.rating != null && (
                             <span style={{ fontSize: "0.66rem", color: "#f1c40f", fontWeight: 600 }}>
                               ★ {marker.rating}

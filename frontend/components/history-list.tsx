@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/use-require-auth";
+import { formatDateBR, tripStatusLabel } from "@/lib/format";
 import type { Trip } from "@/lib/types";
 import { BrandLogo } from "@/components/brand-logo";
 
@@ -75,12 +76,12 @@ export function HistoryList() {
               <div>
                 <strong>{trip.destination}</strong>
                 <p className="lede" style={{ fontSize: "0.9rem" }}>
-                  {trip.start_date} até {trip.end_date}
+                  {formatDateBR(trip.start_date)} até {formatDateBR(trip.end_date)}
                 </p>
               </div>
               <div className="option-tile__meta">
                 <span className={`stage-pill ${trip.status === "draft" ? "stage-pill--waiting_user" : "stage-pill--ready"}`}>
-                  {trip.status === "draft" ? "Rascunho" : trip.status === "planned" ? "Planejado" : trip.status}
+                  {tripStatusLabel(trip.status)}
                 </span>
               </div>
             </Link>

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/use-require-auth";
+import { formatDateRangeBR, kindLabel } from "@/lib/format";
 import type { WorkspaceResponse, AgentThread, Decision, MapResponse } from "@/lib/types";
 import { AgentThinking } from "./agent-thinking";
 import { MapPanel } from "./map-panel";
@@ -309,7 +310,7 @@ export function TripPlanner({ tripId }: Props) {
                 {workspace.trip.destination}
               </h1>
               <p style={{ margin: "0.3rem 0 0", opacity: 0.5, fontSize: "0.8rem" }}>
-                {workspace.trip.start_date} — {workspace.trip.end_date}
+                {formatDateRangeBR(workspace.trip.start_date, workspace.trip.end_date)}
               </p>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "0.6rem", flexShrink: 0 }}>
@@ -694,7 +695,7 @@ export function TripPlanner({ tripId }: Props) {
 
             <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "1rem", flexWrap: "wrap" }}>
               <span style={{ background: "rgba(255,255,255,0.08)", padding: "0.25rem 0.7rem", borderRadius: "1rem", fontSize: "0.72rem", fontWeight: 500 }}>
-                {selectedMarker.kind}
+                {kindLabel(selectedMarker.kind)}
               </span>
               {selectedMarker.rating && (
                 <span style={{ display: "flex", alignItems: "center", gap: "0.3rem", background: "rgba(241,196,15,0.1)", padding: "0.25rem 0.7rem", borderRadius: "1rem", fontSize: "0.75rem" }}>
@@ -972,7 +973,14 @@ function DecisionCard({
 
       <p style={{ margin: "0 0 0.65rem", fontSize: "0.95rem", fontWeight: 700, lineHeight: 1.35 }}>{heading}</p>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: "0.55rem", marginBottom: "0.7rem" }}>
+      <div style={{
+        display: "flex", flexDirection: "column", gap: "0.55rem", marginBottom: "0.7rem",
+        // Cap the proposals area so a multi-day batch (4+ set_day cards) can't push
+        // the heading/buttons off-screen — it scrolls within a fixed height instead.
+        maxHeight: "min(45vh, 340px)", overflowY: "auto", overscrollBehavior: "contain",
+        // room for the scrollbar so content doesn't sit under it
+        paddingRight: "0.2rem",
+      }}>
         {proposals.length > 0 ? (
           proposals.map((proposal, idx) => (
             <div

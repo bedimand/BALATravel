@@ -262,11 +262,16 @@ export function TripForm() {
                   style={{ width: "100%", padding: "0.8rem", borderRadius: "0.5rem", border: "1px solid var(--surface-strong)" }} />
               </label>
             </div>
-            {draft.start_date && draft.end_date && (
-               <p style={{ marginTop: "1rem", textAlign: "center", fontSize: "0.9rem", color: "var(--primary)" }}>
-                 Sua jornada tera {(new Date(draft.end_date).getTime() - new Date(draft.start_date).getTime()) / (1000 * 3600 * 24)} noites.
-               </p>
-            )}
+            {draft.start_date && draft.end_date && (() => {
+               const noites = Math.round(
+                 (new Date(draft.end_date).getTime() - new Date(draft.start_date).getTime()) / (1000 * 3600 * 24)
+               );
+               return (
+                 <p style={{ marginTop: "1rem", textAlign: "center", fontSize: "0.9rem", color: "var(--primary)" }}>
+                   Sua jornada terá {noites} {noites === 1 ? "noite" : "noites"}.
+                 </p>
+               );
+            })()}
           </div>
         )}
 

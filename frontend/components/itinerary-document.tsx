@@ -2,6 +2,8 @@
 
 import { useMemo } from "react";
 
+import { formatDateBR, formatDateRangeBR, kindLabel } from "@/lib/format";
+
 // A single normalized stop on the trip — both the authenticated export view
 // (built from map markers) and the public share page (built from itinerary
 // items) map their own data into this shape so they can share one renderer.
@@ -86,7 +88,7 @@ export function ItineraryDocument({ destination, startDate, endDate, stops, show
         </p>
         <h1>{destination}</h1>
         <p className="export-doc__dates">
-          {startDate} — {endDate}
+          {formatDateRangeBR(startDate, endDate)}
         </p>
       </header>
 
@@ -97,7 +99,7 @@ export function ItineraryDocument({ destination, startDate, endDate, stops, show
           <section key={day.date} className="export-day">
             <div className="export-day__head">
               <span className="export-day__num">Dia {day.dayNumber}</span>
-              <span className="export-day__date">{day.date}</span>
+              <span className="export-day__date">{formatDateBR(day.date)}</span>
               <span className="export-day__count">
                 {day.items.length} {day.items.length === 1 ? "parada" : "paradas"}
               </span>
@@ -135,7 +137,7 @@ export function ItineraryDocument({ destination, startDate, endDate, stops, show
                           <span className="export-stop__rating">★ {stop.rating}</span>
                         )}
                       </div>
-                      <p className="export-stop__kind">{stop.kind}</p>
+                      <p className="export-stop__kind">{kindLabel(stop.kind)}</p>
                       {stop.address && <p className="export-stop__addr">📍 {stop.address}</p>}
                       {stop.note && <p className="export-stop__note">{stop.note}</p>}
                       {showLinks && (
