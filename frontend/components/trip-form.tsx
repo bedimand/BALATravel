@@ -6,6 +6,7 @@ import { setOptions, importLibrary } from "@googlemaps/js-api-loader";
 
 import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/use-require-auth";
+import { BrandLogo } from "@/components/brand-logo";
 
 type Draft = {
   start_date: string;
@@ -225,7 +226,10 @@ export function TripForm() {
   return (
     <div className="trip-wizard">
       <div className="trip-wizard__header" style={{ marginBottom: "2rem", textAlign: "center" }}>
-        <p className="eyebrow" style={{ color: "var(--primary)" }}>BALATravel AI</p>
+        <span className="home-logo" style={{ justifyContent: "center", marginBottom: "0.5rem" }}>
+          <BrandLogo size={32} />
+          <p className="eyebrow" style={{ color: "var(--primary)", margin: 0 }}>BALATravel AI</p>
+        </span>
         <h1 style={{ fontSize: "2rem", fontWeight: 700, margin: "0.5rem 0" }}>{stepsInfo[step].title}</h1>
       </div>
 

@@ -81,11 +81,21 @@ export const exportDocStyles = `
   }
   .export-doc__brand {
     margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     font-size: 0.72rem;
     letter-spacing: 0.18em;
     text-transform: uppercase;
     color: #00a3b5;
     font-weight: 800;
+  }
+  .export-doc__brand-icon {
+    width: 1.6rem;
+    height: 1.6rem;
+    object-fit: contain;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
   .export-doc__head h1 { margin: 0.35rem 0 0.25rem; font-size: 1.9rem; font-weight: 800; }
   .export-doc__dates { margin: 0; color: #6b7280; font-size: 0.95rem; }

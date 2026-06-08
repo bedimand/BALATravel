@@ -61,7 +61,9 @@ export function SharedTripView({ token }: Props) {
   return (
     <main className="export-page">
       <div className="export-toolbar">
-        <span className="export-back" style={{ color: "#6b7280", cursor: "default" }}>
+        <span className="export-back" style={{ color: "#6b7280", cursor: "default", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/icone.png" alt="" style={{ width: "1.4rem", height: "1.4rem", objectFit: "contain" }} />
           Roteiro compartilhado · BALATravel
         </span>
         <button className="export-btn export-btn--ghost" onClick={() => window.print()}>

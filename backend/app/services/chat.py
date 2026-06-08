@@ -91,7 +91,12 @@ def build_chat_response(trip: Trip, itinerary: ItineraryVersion | None, places: 
         f"Itens atuais:\n{_summarize_items_for_prompt(itinerary)}\n"
         f"Warnings atuais: {', '.join(warnings) if warnings else 'nenhum'}\n"
         f"Mensagem do usuario: {user_message}\n"
-        "Regras: proponha no maximo 3 mudancas, seja pratico, nunca sugira compra automatica. "
+        "Regras: seja pratico, nunca sugira compra automatica. "
+        "Quando o pedido afetar VARIOS dias (ex: 'otimize o roteiro por proximidade', "
+        "'reorganize a viagem toda', 'deixe os dias mais leves'), retorne UM item set_day "
+        "por dia afetado em \"proposed_changes\" — uma proposta para cada dia, com a lista "
+        "completa de itens daquele dia. Nao resuma varios dias num unico item. "
+        "Proponha no maximo 7 mudancas (um dia por item); para edicoes pontuais, normalmente 1. "
         "Quando propor, escolha o tipo de mudanca que melhor atende ao pedido. "
         'Quando for apenas conversa, "proposed_changes" deve ser []. '
         'Sempre preencha "assistant_message".'

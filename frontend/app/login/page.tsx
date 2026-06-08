@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
 import { api } from "@/lib/api";
+import { BrandLogo } from "@/components/brand-logo";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -34,7 +35,10 @@ export default function LoginPage() {
         onSubmit={handleSubmit}
         style={{ width: "100%", maxWidth: "420px" }}
       >
-        <div className="trip-wizard__header">
+        <div className="trip-wizard__header" style={{ textAlign: "center" }}>
+          <Link href="/" className="home-logo" style={{ justifyContent: "center", marginBottom: "1rem" }}>
+            <BrandLogo size={48} withWordmark />
+          </Link>
           <h1>Entrar</h1>
           <p className="lede">Acesse sua conta para ver e planejar suas viagens.</p>
         </div>

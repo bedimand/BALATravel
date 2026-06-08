@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/use-require-auth";
 import type { Trip } from "@/lib/types";
+import { BrandLogo } from "@/components/brand-logo";
 
 export function HistoryList() {
   const router = useRouter();
@@ -30,7 +31,10 @@ export function HistoryList() {
         className="workspace-header"
         style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}
       >
-        <h1 style={{ margin: 0, marginRight: "auto" }}>Minhas Viagens</h1>
+        <Link href="/" className="home-logo" style={{ marginRight: "auto" }}>
+          <BrandLogo size={36} />
+          <h1 style={{ margin: 0 }}>Minhas Viagens</h1>
+        </Link>
         <Link
           href="/profile"
           className="button-secondary"

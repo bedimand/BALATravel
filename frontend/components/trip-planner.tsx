@@ -820,40 +820,31 @@ function fmtTime(value: unknown): string {
  * wants to change — a before→after diff for single items, a day overview for a
  * full-day replan — instead of a blocking full-screen "decision required" wall.
  */
-function DecisionCard({
-  decision,
-  markers,
-  decideBusy,
-  onDecide,
-  inline = false,
-}: {
-  decision: Decision;
-  markers: MapResponse["markers"];
-  decideBusy: boolean;
-  onDecide: (action: "approve" | "reject") => void;
-  // inline = rendered inside the chat thread (no fixed positioning); otherwise
-  // it floats bottom-right as a standalone popup.
-  inline?: boolean;
-}) {
-  const proposal: ProposalChange = decision.payload_json?.proposal ?? {};
+/**
+ * Renders the body of ONE proposal (before→after for update_item, the day plan
+ * for set_day, etc.). Shared by DecisionCard so a batch of changes reuses the
+ * exact same per-proposal rendering.
+ */
+function renderProposalBody(
+  proposal: ProposalChange,
+  markers: MapResponse["markers"],
+  fallbackSummary: string,
+): ReactNode {
   const payload = (proposal.payload ?? {}) as Record<string, unknown>;
   const type = proposal.type;
 
-  // For a single-item edit, find the current item so we can show before→after.
-  const current =
-    type === "update_item" && payload.item_id != null
-      ? markers.find((m) => m.id === `item-${payload.item_id}`)
-      : undefined;
-
-  let body: ReactNode;
   if (type === "update_item") {
+    // For a single-item edit, find the current item so we can show before→after.
+    const current =
+      payload.item_id != null
+        ? markers.find((m) => m.id === `item-${payload.item_id}`)
+        : undefined;
     const afterTitle = (payload.title as string) || current?.title || "";
     const afterStart = fmtTime(payload.start_time);
     const afterEnd = fmtTime(payload.end_time);
     const afterTime = afterStart && afterEnd ? `${afterStart}–${afterEnd}` : "";
-    const beforeTime =
-      current?.start_time ? fmtTime(current.start_time) : "";
-    body = (
+    const beforeTime = current?.start_time ? fmtTime(current.start_time) : "";
+    return (
       <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
         {current && (
           <div style={diffRowStyle("before")}>
@@ -878,10 +869,12 @@ function DecisionCard({
         ) : null}
       </div>
     );
-  } else if (type === "set_day") {
+  }
+
+  if (type === "set_day") {
     const items = Array.isArray(payload.items) ? (payload.items as Record<string, unknown>[]) : [];
     const dateText = String(payload.date ?? "");
-    body = (
+    return (
       <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
         <div style={{ fontSize: "0.8rem", opacity: 0.75 }}>
           Novo plano para <strong>{dateText}</strong> · {items.length} atividade{items.length === 1 ? "" : "s"}
@@ -899,23 +892,50 @@ function DecisionCard({
         </ol>
       </div>
     );
-  } else if (type === "generate_itinerary") {
-    body = (
+  }
+
+  if (type === "generate_itinerary") {
+    return (
       <p style={{ margin: 0, fontSize: "0.82rem", opacity: 0.75, lineHeight: 1.5 }}>
         Refazer o roteiro completo do zero com base nas novas preferências.
       </p>
     );
-  } else {
-    // Fallback: no structured proposal available — show the summary text.
-    body = (
-      <p style={{ margin: 0, fontSize: "0.82rem", opacity: 0.75, lineHeight: 1.5 }}>
-        {decision.summary}
-      </p>
-    );
   }
 
-  const reason = proposal.reason || decision.summary;
-  const heading = proposal.title || decision.title;
+  // Fallback: no structured proposal available — show the summary text.
+  return (
+    <p style={{ margin: 0, fontSize: "0.82rem", opacity: 0.75, lineHeight: 1.5 }}>
+      {fallbackSummary}
+    </p>
+  );
+}
+
+function DecisionCard({
+  decision,
+  markers,
+  decideBusy,
+  onDecide,
+  inline = false,
+}: {
+  decision: Decision;
+  markers: MapResponse["markers"];
+  decideBusy: boolean;
+  onDecide: (action: "approve" | "reject") => void;
+  // inline = rendered inside the chat thread (no fixed positioning); otherwise
+  // it floats bottom-right as a standalone popup.
+  inline?: boolean;
+}) {
+  // A request can produce several proposals (one set_day per affected day),
+  // approved together. Read the list; fall back to the legacy single proposal.
+  const proposals: ProposalChange[] =
+    decision.payload_json?.proposals ??
+    (decision.payload_json?.proposal ? [decision.payload_json.proposal] : []);
+  const multi = proposals.length > 1;
+
+  const heading = multi
+    ? `${proposals.length} mudanças sugeridas`
+    : proposals[0]?.title || decision.title;
+  const reason = multi ? decision.summary : proposals[0]?.reason || decision.summary;
 
   return (
     <div
@@ -952,11 +972,32 @@ function DecisionCard({
 
       <p style={{ margin: "0 0 0.65rem", fontSize: "0.95rem", fontWeight: 700, lineHeight: 1.35 }}>{heading}</p>
 
-      <div style={{
-        background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)",
-        borderRadius: "0.75rem", padding: "0.7rem 0.8rem", marginBottom: "0.7rem"
-      }}>
-        {body}
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.55rem", marginBottom: "0.7rem" }}>
+        {proposals.length > 0 ? (
+          proposals.map((proposal, idx) => (
+            <div
+              key={idx}
+              style={{
+                background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: "0.75rem", padding: "0.7rem 0.8rem",
+              }}
+            >
+              {multi && proposal.title && (
+                <p style={{ margin: "0 0 0.4rem", fontSize: "0.8rem", fontWeight: 700, opacity: 0.85 }}>
+                  {proposal.title}
+                </p>
+              )}
+              {renderProposalBody(proposal, markers, decision.summary)}
+            </div>
+          ))
+        ) : (
+          <div style={{
+            background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)",
+            borderRadius: "0.75rem", padding: "0.7rem 0.8rem",
+          }}>
+            <p style={{ margin: 0, fontSize: "0.82rem", opacity: 0.75, lineHeight: 1.5 }}>{decision.summary}</p>
+          </div>
+        )}
       </div>
 
       {reason && heading !== reason && (

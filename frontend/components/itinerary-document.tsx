@@ -79,7 +79,11 @@ export function ItineraryDocument({ destination, startDate, endDate, stops, show
   return (
     <article className="export-doc">
       <header className="export-doc__head">
-        <p className="export-doc__brand">BALATravel</p>
+        <p className="export-doc__brand">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/icone.png" alt="" className="export-doc__brand-icon" />
+          BALATravel
+        </p>
         <h1>{destination}</h1>
         <p className="export-doc__dates">
           {startDate} — {endDate}

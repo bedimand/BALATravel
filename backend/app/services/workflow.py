@@ -261,46 +261,58 @@ class WorkflowService:
         except LLMIntegrationError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        proposal: dict[str, Any] | None = (
-            preview.proposed_changes[0].model_dump() if preview.proposed_changes else None
-        )
+        # A request may touch several days (e.g. "otimize por proximidade" → one
+        # set_day per day). Keep ALL proposed changes — they are approved together
+        # as a single batch — instead of silently dropping everything past [0].
+        proposals: list[dict[str, Any]] = [c.model_dump() for c in preview.proposed_changes]
 
         # Always record the turn so the user's message and the assistant's real reply
         # appear in the thread (even for plain conversation with no change).
         assistant_text = preview.assistant_message.strip() or (
-            proposal["reason"] if proposal else "Certo!"
+            proposals[0]["reason"] if proposals else "Certo!"
         )
         self._record_chat_run(db, trip, user_message=message, assistant_message=assistant_text)
 
-        if not proposal:
+        if not proposals:
             # Pure conversation — nothing to approve, no error artifact.
             return
+
+        # One proposal → use its own title/reason. Several → an aggregate label so
+        # the card header reads "N mudanças no roteiro".
+        if len(proposals) == 1:
+            title = proposals[0]["title"]
+            summary = proposals[0]["reason"]
+        else:
+            title = f"{len(proposals)} mudanças no roteiro"
+            summary = " · ".join(p["reason"] for p in proposals if p.get("reason"))
 
         self._replace_artifact(
             db,
             trip,
             "change_diff",
-            proposal["title"],
-            proposal["reason"],
-            {"proposal": proposal, "message": message},
+            title,
+            summary,
+            {"proposals": proposals, "message": message},
             run=run,
         )
         self._replace_decision(
             db,
             trip,
             "change_approval",
-            proposal["title"],
-            proposal["reason"],
+            title,
+            summary,
             [
                 {"id": "approve", "label": "Aprovar"},
                 {"id": "reject", "label": "Rejeitar"},
             ],
             "approve",
-            payload_json={"proposal": proposal},
+            payload_json={"proposals": proposals},
             run=run,
         )
 
-    def _apply_change_proposal(self, db: Session, trip: Trip, proposal: dict[str, Any]) -> None:
+    def _apply_change_proposal(
+        self, db: Session, trip: Trip, proposal: dict[str, Any], record_confirmation: bool = True
+    ) -> None:
         proposal_type = proposal.get("type")
         if proposal_type in {"generate_itinerary", "update_item"}:
             AgentCoordinator(self.user).apply_change(db, trip.id, ProposedChange.model_validate(proposal))
@@ -313,9 +325,12 @@ class WorkflowService:
                 raise HTTPException(status_code=400, detail="Missing date for set_day proposal.")
             tool_set_day(db, trip, date_text, items, rationale=str(proposal.get("reason") or "Workflow set day"), run=None)
             # apply_change records its own confirmation run; set_day goes straight to the
-            # tool, so add the confirmation here to keep the thread consistent.
-            title = str(proposal.get("title") or f"Dia {date_text} reorganizado")
-            self._record_chat_run(db, trip, user_message=None, assistant_message=f"Pronto! {title} ✓")
+            # tool, so add the confirmation here to keep the thread consistent. When applying
+            # a batch we suppress the per-day confirmation and let the caller record one
+            # combined message instead of N bubbles.
+            if record_confirmation:
+                title = str(proposal.get("title") or f"Dia {date_text} reorganizado")
+                self._record_chat_run(db, trip, user_message=None, assistant_message=f"Pronto! {title} ✓")
             return
         raise HTTPException(status_code=400, detail="Unsupported proposal type.")
 
@@ -413,15 +428,49 @@ class WorkflowService:
             return self.build_workspace(db, trip.id)
 
         if decision.kind == "change_approval" and action == "approve":
-            proposal = (decision.payload_json or {}).get("proposal") or {}
-            self._apply_change_proposal(db, trip, proposal)
+            # Approving applies EVERY proposed change in the batch (one set_day per
+            # affected day). Fall back to the legacy single "proposal" key for
+            # decisions created before this became a list.
+            payload_json = decision.payload_json or {}
+            proposals = payload_json.get("proposals")
+            if not proposals:
+                legacy = payload_json.get("proposal")
+                proposals = [legacy] if legacy else []
+
+            applied: list[dict[str, Any]] = []
+            for proposal in proposals:
+                try:
+                    # Each set_day/apply_change clones the active itinerary into a new
+                    # version. Reload the trip before each one so the next day builds on
+                    # the version the previous proposal just created, not a stale snapshot.
+                    trip = self._load_trip(db, trip.id)
+                    self._apply_change_proposal(db, trip, proposal, record_confirmation=False)
+                    applied.append(proposal)
+                except HTTPException as exc:
+                    done = ", ".join(str(p.get("title") or "") for p in applied) or "nenhuma"
+                    raise HTTPException(
+                        status_code=exc.status_code,
+                        detail=(
+                            f"Falha ao aplicar '{proposal.get('title') or proposal.get('type')}': "
+                            f"{exc.detail}. Mudanças já aplicadas: {done}."
+                        ),
+                    ) from exc
+
+            trip = self._load_trip(db, trip.id)
+            if len(applied) == 1:
+                confirm = f"Pronto! {applied[0].get('title') or 'Mudança'} ✓"
+            else:
+                titles = ", ".join(str(p.get("title") or "") for p in applied if p.get("title"))
+                confirm = f"Pronto! Apliquei {len(applied)} ajustes{f': {titles}' if titles else ''} ✓"
+            self._record_chat_run(db, trip, user_message=None, assistant_message=confirm)
+
             self._replace_artifact(
                 db,
                 trip,
                 "plan_draft",
                 "Revisao aplicada",
-                str(proposal.get("reason") or "Mudanca aprovada e aplicada."),
-                {"proposal": proposal},
+                " · ".join(str(p.get("reason") or "") for p in applied if p.get("reason")) or "Mudancas aprovadas e aplicadas.",
+                {"proposals": applied},
             )
             state.current_stage = "active"
             state.stage_status = "ready"
@@ -430,7 +479,7 @@ class WorkflowService:
             return self.build_workspace(db, trip.id)
 
         if decision.kind == "change_approval" and action == "reject":
-            title = str((decision.payload_json or {}).get("proposal", {}).get("title") or decision.title)
+            title = str(decision.title or "")
             self._record_chat_run(
                 db, trip, user_message=None,
                 assistant_message=f"Sem problema, descartei a sugestão{f' ({title})' if title else ''}. Quer tentar de outro jeito?",

@@ -68,7 +68,7 @@ export type Decision = {
   summary: string;
   options_json: DecisionOption[];
   recommended_option_id?: string | null;
-  payload_json?: { proposal?: ProposedChange } & Record<string, unknown>;
+  payload_json?: { proposal?: ProposedChange; proposals?: ProposedChange[] } & Record<string, unknown>;
   status: "pending" | "decided";
 };
 
