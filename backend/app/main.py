@@ -17,6 +17,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    max_age=86400,  # cache CORS preflight 24h so browsers don't re-OPTIONS every poll
 )
 
 app.include_router(auth.router, prefix=settings.api_prefix)

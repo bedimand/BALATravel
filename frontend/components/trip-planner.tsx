@@ -68,6 +68,13 @@ export function TripPlanner({ tripId }: Props) {
     loadThread();
   }, [loadWorkspace, loadThread]);
 
+  // Stable identity so <AgentThinking> doesn't restart its poll loop on every
+  // re-render of this component (which re-renders on each workspace poll).
+  const handleAgentComplete = useCallback(() => {
+    loadWorkspace();
+    loadThread();
+  }, [loadWorkspace, loadThread]);
+
   const isAgentThinking = useMemo(
     () =>
       workspace?.workflow.stage_status === "running" ||
@@ -191,7 +198,7 @@ export function TripPlanner({ tripId }: Props) {
       `}</style>
 
       {isAgentThinking && (
-        <AgentThinking tripId={Number(tripId)} onComplete={() => { loadWorkspace(); loadThread(); }} />
+        <AgentThinking tripId={Number(tripId)} onComplete={handleAgentComplete} />
       )}
 
       {/* MAP */}

@@ -25,30 +25,44 @@ export function AgentThinking({ tripId, onComplete }: { tripId: number; onComple
   const [status, setStatus] = useState<AgentStatusResponse | null>(null);
   const feedEndRef = useRef<HTMLDivElement>(null);
 
+  // Keep the latest onComplete in a ref so the polling effect does NOT depend on
+  // it. The parent passes a fresh inline arrow on every render, so depending on
+  // it would tear down and restart the poll loop constantly — and because the
+  // old loop is mid-await when cleanup runs, it would reschedule itself, piling
+  // up concurrent pollers that hammer /agent-status. (That flood is what was
+  // saturating the server.)
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
+
   useEffect(() => {
-    let pollingId: NodeJS.Timeout;
+    let pollingId: ReturnType<typeof setTimeout>;
+    let cancelled = false;
 
     async function poll() {
       try {
         const data = await api.getAgentStatus(tripId);
+        if (cancelled) return;
         setStatus(data);
 
         if (data.status === "completed" || data.status === "failed") {
           setTimeout(() => {
-            onComplete();
+            if (!cancelled) onCompleteRef.current();
           }, 1500);
         } else {
           pollingId = setTimeout(poll, 1500);
         }
       } catch (e) {
         console.error("Agent status polling failed", e);
-        pollingId = setTimeout(poll, 3000);
+        if (!cancelled) pollingId = setTimeout(poll, 3000);
       }
     }
 
     poll();
-    return () => clearTimeout(pollingId);
-  }, [tripId, onComplete]);
+    return () => {
+      cancelled = true;
+      clearTimeout(pollingId);
+    };
+  }, [tripId]);
 
   // Keep the newest step in view as the feed grows.
   useEffect(() => {
