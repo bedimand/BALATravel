@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { api } from "@/lib/api";
+import { toolLabel } from "@/lib/format";
 import type { AgentThread } from "@/lib/types";
 
 type Props = {
@@ -118,7 +119,7 @@ export function ChatPanel({ tripId, summary, currentStep, onRunComplete }: Props
                   <div className="assistant-log__tools">
                     {run.tool_calls.map((call) => (
                       <span key={call.id} className={`tool-pill tool-pill--${call.status}`}>
-                        {call.tool_name}
+                        {toolLabel(call.tool_name)}
                       </span>
                     ))}
                   </div>

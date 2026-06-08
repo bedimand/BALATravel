@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { api } from "@/lib/api";
 import { useRequireAuth } from "@/lib/use-require-auth";
-import { formatDateRangeBR, kindLabel } from "@/lib/format";
+import { formatDateRangeBR, kindLabel, toolLabel } from "@/lib/format";
 import type { WorkspaceResponse, AgentThread, Decision, MapResponse } from "@/lib/types";
 import { AgentThinking } from "./agent-thinking";
 import { MapPanel } from "./map-panel";
@@ -545,7 +545,7 @@ export function TripPlanner({ tripId }: Props) {
                         color: call.status === "success" ? "#00e5ff" : "#ff6464",
                         border: `1px solid ${call.status === "success" ? "rgba(0,229,255,0.2)" : "rgba(255,100,100,0.2)"}`
                       }}>
-                        {call.tool_name}
+                        {toolLabel(call.tool_name)}
                       </span>
                     ))}
                   </div>

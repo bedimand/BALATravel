@@ -87,3 +87,33 @@ export function versionStatusLabel(value?: string | null): string {
   if (!value) return "";
   return VERSION_STATUS_LABELS[value.trim().toLowerCase()] ?? value;
 }
+
+// The agent's internal tool names (update_item, set_day, search_places…) leak
+// into the chat log as raw snake_case. Map them to plain-language pt-BR labels
+// the traveler understands; unknown names fall back to a prettified slug.
+const TOOL_LABELS: Record<string, string> = {
+  search_places: "Buscando lugares",
+  list_saved_places: "Consultando lugares salvos",
+  list_current_options: "Revisando opções",
+  start_itinerary: "Montando roteiro",
+  finalize_itinerary: "Finalizando roteiro",
+  review_itinerary: "Revisando roteiro",
+  insert_item: "Adicionando atividade",
+  place_item: "Adicionando atividade",
+  update_item: "Atualizando atividade",
+  remove_item: "Removendo atividade",
+  set_day: "Reorganizando o dia",
+  get_day_schedule: "Consultando a agenda do dia",
+  get_day_context: "Analisando o dia",
+  get_trip_snapshot: "Consultando a viagem",
+  get_weather_forecast: "Verificando o clima",
+  check_route: "Verificando trajetos",
+  estimate_route: "Calculando deslocamentos",
+  rollback_version: "Restaurando versão anterior",
+  finish: "Concluindo",
+};
+
+export function toolLabel(value?: string | null): string {
+  if (!value) return "";
+  return TOOL_LABELS[value.trim().toLowerCase()] ?? kindLabel(value);
+}
